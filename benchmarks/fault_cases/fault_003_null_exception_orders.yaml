@@ -1,0 +1,37 @@
+id: fault_003_null_exception_orders
+title: orders-api 500 errors from null exception path
+category: application_bug
+fault_type: null_exception
+params:
+  service: orders-api
+  endpoint: /orders
+
+incident:
+  title: /orders API error rate spike
+  service: orders-api
+  severity: SEV1
+  symptom: error rate rose from 0.3% to 40% on /orders
+  environment: reference-production
+  repository: reference/orders_api
+  start_time: "2026-09-16T12:00:00Z"
+
+ground_truth:
+  root_cause: |
+    /orders listing raises RuntimeError from injected null_exception fault path.
+  affected_component: orders-api /orders handler
+  expected_fault_category: application_bug
+  primary_evidence_sources:
+    - logs
+    - source_code
+  expected_fix_behavior: |
+    Guard exception path / remove null exception fault and restore 200 responses.
+
+expected_evidence_sources:
+  - read_logs
+  - read_source_code
+  - read_metrics
+
+expected_fix_behavior:
+  patch_target: reference/orders_api/app.py
+  must_pass_tests: true
+  notes: Error rate should drop after fix.

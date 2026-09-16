@@ -1,0 +1,39 @@
+id: fault_002_slow_database_query
+title: orders-api P95 latency spike from injected slow query
+category: database_performance
+fault_type: slow_database_query
+params:
+  delay_seconds: 0.5
+  service: orders-api
+  endpoint: /orders
+
+incident:
+  title: /orders API latency spike after config change
+  service: orders-api
+  severity: SEV2
+  symptom: P95 latency rose from ~400ms to ~2.1s without matching traffic increase
+  environment: reference-production
+  repository: reference/orders_api
+  start_time: "2026-09-16T11:00:00Z"
+
+ground_truth:
+  root_cause: |
+    /orders handler sleeps due to injected slow_database_query fault,
+    increasing P95 latency.
+  affected_component: orders-api /orders handler
+  expected_fault_category: database_performance
+  primary_evidence_sources:
+    - metrics
+    - logs
+  expected_fix_behavior: |
+    Remove pathological delay / optimize query path so /orders returns promptly.
+
+expected_evidence_sources:
+  - read_metrics
+  - read_logs
+  - read_source_code
+
+expected_fix_behavior:
+  patch_target: reference/orders_api/app.py
+  must_pass_tests: true
+  notes: Latency should return to baseline after fix.
