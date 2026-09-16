@@ -1,0 +1,42 @@
+id: fault_001_n_plus_one_orders
+title: orders-api P95 latency spike from N+1 item loading
+category: database_performance
+fault_type: n_plus_one_query
+params:
+  per_row_delay: 0.05
+  service: orders-api
+  endpoint: /orders
+
+incident:
+  title: /orders API latency and error rate spike
+  service: orders-api
+  severity: SEV2
+  symptom: P95 latency rose from ~400ms to ~2.8s; error rate rose from ~0.3% to ~7%
+  environment: reference-production
+  repository: reference/orders_api
+  start_time: "2026-09-16T10:00:00Z"
+
+ground_truth:
+  root_cause: |
+    list_orders loads OrderItems with a per-order query (N+1) after recent commit,
+    increasing P95 latency on /orders.
+  affected_component: orders-api /app/services orders listing
+  expected_fault_category: database_performance
+  primary_evidence_sources:
+    - metrics
+    - logs
+    - source_code
+  expected_fix_behavior: |
+    Batch-load order items for the page of orders (single query or selectinload)
+    and avoid per-row sleep/pathological N+1 access.
+
+expected_evidence_sources:
+  - read_metrics
+  - read_logs
+  - inspect_git_history
+  - read_source_code
+
+expected_fix_behavior:
+  patch_target: reference/orders_api/app.py
+  must_pass_tests: true
+  notes: Fix should reduce /orders latency without changing API contract.
