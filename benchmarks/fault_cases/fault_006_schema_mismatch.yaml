@@ -1,0 +1,23 @@
+﻿id: fault_006_schema_mismatch
+title: orders-api 500 from schema mismatch
+category: data_contract
+fault_type: schema_mismatch
+params:
+  missing_field: total_cents
+incident:
+  title: /orders 500 after DTO change
+  service: orders-api
+  severity: SEV2
+  symptom: serialization errors on /orders
+  environment: reference-production
+  repository: reference/orders_api
+  start_time: "2026-09-16T14:00:00Z"
+ground_truth:
+  root_cause: Missing field during order serialization under schema_mismatch fault.
+  affected_component: orders-api serializer
+  fault_category: data_contract
+  causal_facts: [KeyError missing field, HTTP 500]
+expected_evidence_sources: [read_logs, read_source_code]
+expected_fix_behavior:
+  patch_target: reference/orders_api/app.py
+  must_pass_tests: true

@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     sandbox_image: str = Field(default="python:3.12-slim")
     sandbox_network: str = Field(default="none")
 
+    # Test-only auto approval (must never default true in production)
+    auto_approve_for_tests: bool = Field(default=False)
+
+    # MCP server command for live stdio
+    mcp_server_command: str = Field(default="")
+
 
 @lru_cache
 def get_settings() -> Settings:

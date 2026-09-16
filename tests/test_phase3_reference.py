@@ -57,9 +57,11 @@ def test_reference_orders_api_fault_injection() -> None:
         assert resp.status_code == 200
         orders = client.get("/orders")
         assert orders.status_code == 200
-        metrics = client.get("/metrics").json()
-        assert metrics["fault_type"] == "n_plus_one_query"
-        assert metrics["p95_latency_ms"] >= 1.0
+        # Prometheus text exposition format
+        metrics_text = client.get("/metrics").text
+        assert "orders_api_requests_total" in metrics_text
+        meta = client.get("/metrics/json").json()
+        assert meta["fault_type"] == "n_plus_one_query"
         reset_fault()
     finally:
         sys.path.remove(str(REF_DIR))

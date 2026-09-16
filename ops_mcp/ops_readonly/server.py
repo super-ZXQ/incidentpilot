@@ -160,18 +160,47 @@ def read_source_code(repository: str = "", path: str = "app.py") -> dict[str, An
 def query_database_readonly(query: str = "SELECT 1") -> dict[str, Any]:
     """Run a read-only SQL query against the reference database.
 
-    Write statements are rejected.
+    Write statements are rejected via sqlglot AST + keyword defense.
     """
-    forbidden = ("insert", "update", "delete", "drop", "alter", "truncate", "create", "grant", "revoke")
-    lowered = query.lower().strip()
-    if any(lowered.startswith(kw) or f" {kw} " in f" {lowered} " for kw in forbidden):
-        return {"error": "write SQL forbidden", "query": query}
-    # Reference DB is sqlite file under orders_api var if present.
+    try:
+        from incidentpilot.tools.sql_guard import validate_readonly_sql
+
+        validate_readonly_sql(query)
+    except ImportError:
+        forbidden = (
+            "insert", "update", "delete", "drop", "alter", "truncate", "create", "grant", "revoke"
+        )
+        lowered = query.lower().strip()
+        if any(lowered.startswith(kw) or f" {kw} " in f" {lowered} " for kw in forbidden):
+            return {"error": "write SQL forbidden", "query": query}
+    except Exception as exc:
+        return {"error": str(exc), "query": query, "validated": False}
+
+    import os
+
+    ref_db_url = os.environ.get("REFERENCE_DB_URL", "")
+    if ref_db_url.startswith("postgresql"):
+        import psycopg
+
+        try:
+            with psycopg.connect(ref_db_url, connect_timeout=3) as conn:
+                conn.read_only = True
+                with conn.cursor() as cur:
+                    cur.execute("SET statement_timeout = '5s'")
+                    cur.execute(query)
+                    if cur.description is None:
+                        return {"query": query, "rows": [], "source": "reference_postgres"}
+                    cols = [c.name for c in cur.description]
+                    rows = [dict(zip(cols, row, strict=False)) for row in cur.fetchmany(100)]
+                    return {"query": query, "rows": rows, "source": "reference_postgres"}
+        except Exception as exc:
+            return {"error": str(exc), "query": query, "source": "reference_postgres"}
+
     db_path = REFERENCE_REPO / "var" / "orders.db"
     if not db_path.exists():
         return {
             "query": query,
-            "rows": [{"note": "reference db not initialized; use fake/seeded tools in tests"}],
+            "rows": [{"note": "reference db not initialized"}],
             "source": "unavailable",
         }
     import sqlite3

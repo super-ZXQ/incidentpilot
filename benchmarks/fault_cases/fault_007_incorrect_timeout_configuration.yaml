@@ -1,0 +1,23 @@
+﻿id: fault_007_incorrect_timeout_configuration
+title: orders-api incorrect limit configuration
+category: configuration
+fault_type: incorrect_configuration
+params:
+  max_limit: 1
+incident:
+  title: /orders returns incomplete results
+  service: orders-api
+  severity: SEV3
+  symptom: only one order returned regardless of requested limit
+  environment: reference-production
+  repository: reference/orders_api
+  start_time: "2026-09-16T14:30:00Z"
+ground_truth:
+  root_cause: Incorrect configuration caps order listing to one row.
+  affected_component: orders-api list_orders config
+  fault_category: configuration
+  causal_facts: [max_limit=1, truncated response]
+expected_evidence_sources: [read_source_code, read_logs]
+expected_fix_behavior:
+  patch_target: reference/orders_api/app.py
+  must_pass_tests: true

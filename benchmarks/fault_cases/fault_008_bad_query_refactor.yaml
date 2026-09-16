@@ -1,0 +1,23 @@
+﻿id: fault_008_bad_query_refactor
+title: orders-api regression from bad query refactor
+category: code_regression
+fault_type: bad_query_refactor
+params:
+  per_row_delay: 0.04
+incident:
+  title: /orders slower after refactor commit
+  service: orders-api
+  severity: SEV2
+  symptom: latency regression after recent commit
+  environment: reference-production
+  repository: reference/orders_api
+  start_time: "2026-09-16T15:00:00Z"
+ground_truth:
+  root_cause: Bad query refactor reintroduced per-order item loading delay.
+  affected_component: orders-api list_orders
+  fault_category: code_regression
+  causal_facts: [recent refactor, N+1-like delay]
+expected_evidence_sources: [inspect_git_history, read_source_code, read_metrics]
+expected_fix_behavior:
+  patch_target: reference/orders_api/app.py
+  must_pass_tests: true

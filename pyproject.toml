@@ -46,6 +46,9 @@ markers = [
     "integration: requires external services",
     "docker: requires Docker daemon",
     "e2e: end-to-end benchmark",
+    "mcp: MCP protocol tests",
+    "llm: requires real LLM credentials",
+    "github: requires real GitHub token",
     "blocked_by_external_env: needs real credentials or external env",
 ]
 

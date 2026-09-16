@@ -19,6 +19,7 @@ REGISTERED_FAULT_TYPES = {
     "schema_mismatch",
     "cache_failure",
     "incorrect_configuration",
+    "bad_query_refactor",
 }
 
 

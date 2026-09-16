@@ -1,0 +1,23 @@
+﻿id: fault_004_missing_database_index
+title: orders-api slow listing from missing index pattern
+category: database_performance
+fault_type: missing_index
+params:
+  per_row_delay: 0.03
+incident:
+  title: /orders listing slower after schema change
+  service: orders-api
+  severity: SEV3
+  symptom: list endpoint gradually slower under normal traffic
+  environment: reference-production
+  repository: reference/orders_api
+  start_time: "2026-09-16T13:00:00Z"
+ground_truth:
+  root_cause: Missing-index style sequential access increases /orders latency.
+  affected_component: orders-api order item access path
+  fault_category: database_performance
+  causal_facts: [per-order item query, elevated listing latency]
+expected_evidence_sources: [read_metrics, read_logs, read_source_code]
+expected_fix_behavior:
+  patch_target: reference/orders_api/app.py
+  must_pass_tests: true

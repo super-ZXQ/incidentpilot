@@ -1,0 +1,23 @@
+﻿id: fault_005_dependency_timeout
+title: orders-api latency from dependency timeout
+category: dependency
+fault_type: dependency_timeout
+params:
+  delay_seconds: 1.2
+incident:
+  title: /orders P95 spike from slow dependency
+  service: orders-api
+  severity: SEV2
+  symptom: P95 latency 400ms to 2.8s correlated with dependency
+  environment: reference-production
+  repository: reference/orders_api
+  start_time: "2026-09-16T13:30:00Z"
+ground_truth:
+  root_cause: Injected dependency timeout delay in /orders handler.
+  affected_component: orders-api /orders
+  fault_category: dependency
+  causal_facts: [dependency delay, elevated P95]
+expected_evidence_sources: [read_metrics, read_logs]
+expected_fix_behavior:
+  patch_target: reference/orders_api/app.py
+  must_pass_tests: true

@@ -84,10 +84,9 @@ class DeterministicFakeTools:
     async def query_database_readonly(
         self, query: str = "SELECT 1", **_: Any
     ) -> dict[str, Any]:
-        forbidden = ("insert", "update", "delete", "drop", "alter", "truncate", "create")
-        lowered = query.lower()
-        if any(kw in lowered for kw in forbidden):
-            raise ValueError("write SQL is forbidden in query_database_readonly")
+        from incidentpilot.tools.sql_guard import validate_readonly_sql
+
+        validate_readonly_sql(query)
         return {
             "query": query,
             "rows": [{"slow_queries": 12, "max_duration_ms": 2400}],

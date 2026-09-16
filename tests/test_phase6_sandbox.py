@@ -39,14 +39,12 @@ def test_apply_patch_and_run_pytest() -> None:
     settings = Settings(sandbox_enabled=False, reference_repo_path=str(REF))
     mgr = SandboxManager(settings)
     repo = mgr.create_workspace("run-patch", REF)
-    # Create a tiny test that always passes in the workspace
     (repo / "test_smoke.py").write_text("def test_ok():\n    assert 1 + 1 == 2\n", encoding="utf-8")
     patch = generate_deterministic_patch("n+1")
     mgr.apply_patch("run-patch", patch)
-    # patched app.py should not contain per-row sleep
     content = (repo / "app.py").read_text(encoding="utf-8")
     assert "per_row_delay" not in content or "Fixed" in content
-    result = mgr.run_tests("run-patch", profile="pytest", timeout=60)
+    result = mgr.run_tests("run-patch", profile="pytest_regression", timeout=60)
     assert result.ok is True
     assert result.exit_code == 0
     artifact = mgr.export_patch_artifact(

@@ -48,6 +48,8 @@ def form_root_cause(
     hypothesis: dict[str, Any],
     *,
     affected_component: str,
+    fault_category: str = "",
+    causal_facts: list[str] | None = None,
 ) -> dict[str, Any]:
     if not hypothesis.get("evidence_ids"):
         raise ValueError("root cause must reference evidence ids")
@@ -55,4 +57,6 @@ def form_root_cause(
         "summary": hypothesis["statement"],
         "evidence_ids": list(hypothesis["evidence_ids"]),
         "affected_component": affected_component,
+        "fault_category": fault_category or "unspecified",
+        "causal_facts": causal_facts or [],
     }

@@ -76,21 +76,25 @@ class BenchmarkReport:
 
 
 def _score_root_cause(ground_truth: dict[str, Any], agent_summary: str) -> bool:
-    """Keyword overlap scoring against Fault Case ground truth (not agent self-label)."""
+    """Structured scoring preferred; keyword overlap is only a weak fallback signal."""
+    from incidentpilot.eval.scoring import score_structured_root_cause
+
+    agent_rc = {
+        "summary": agent_summary,
+        "evidence_ids": ["E"],
+    }
+    scores = score_structured_root_cause(ground_truth, agent_rc)
+    if scores["structured_ok"]:
+        return True
     expected = str(ground_truth.get("root_cause", "")).lower()
     summary = (agent_summary or "").lower()
     if not expected or not summary:
         return False
-    # Extract significant tokens from ground truth
-    tokens = {
-        t
-        for t in expected.replace("\n", " ").split()
-        if len(t) > 4 and t.isalpha()
-    }
+    tokens = {t for t in expected.replace("\n", " ").split() if len(t) > 4 and t.isalpha()}
     if not tokens:
         return False
     hits = sum(1 for t in tokens if t in summary)
-    return hits / len(tokens) >= 0.2
+    return hits / len(tokens) >= 0.35
 
 
 class EvaluationHarness:

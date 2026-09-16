@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync
+        run: uv sync --extra dev
+      - name: Ruff
+        run: uv run ruff check src tests reference ops_mcp
+      - name: Pytest
+        run: uv run pytest -q
+        env:
+          OTEL_CONSOLE_EXPORTER: "false"
+          LLM_ENABLED: "false"
+          GITHUB_INTEGRATION_ENABLED: "false"
+          SANDBOX_ENABLED: "false"

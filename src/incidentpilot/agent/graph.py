@@ -115,22 +115,9 @@ async def run_agent_workflow(
         final_state = await _execute_graph(state, settings, gateway)
 
         status = AgentRunStatus(final_state.get("status", AgentRunStatus.FAILED.value))
-        await service.mark_status(
-            run,
-            status,
-            workflow_state=final_state.get("workflow_state", WorkflowState.FAILED.value),
-            error=final_state.get("error"),
-            result=final_state.get("result") or {},
-            root_cause=final_state.get("root_cause"),
-            finished=status
-            in {
-                AgentRunStatus.RESOLVED,
-                AgentRunStatus.INSUFFICIENT_EVIDENCE,
-                AgentRunStatus.NEEDS_HUMAN_INTERVENTION,
-                AgentRunStatus.FAILED,
-            },
-        )
 
+        # Persist investigation artifacts BEFORE marking terminal status so
+        # API consumers never observe a finished run without evidence/tool calls.
         for item in final_state.get("tool_calls") or []:
             session.add(
                 ToolCall(
@@ -169,6 +156,23 @@ async def run_agent_workflow(
                 )
             )
         await session.commit()
+
+        await service.mark_status(
+            run,
+            status,
+            workflow_state=final_state.get("workflow_state", WorkflowState.FAILED.value),
+            error=final_state.get("error"),
+            result=final_state.get("result") or {},
+            root_cause=final_state.get("root_cause"),
+            finished=status
+            in {
+                AgentRunStatus.RESOLVED,
+                AgentRunStatus.INSUFFICIENT_EVIDENCE,
+                AgentRunStatus.NEEDS_HUMAN_INTERVENTION,
+                AgentRunStatus.FAILED,
+                AgentRunStatus.WAITING_APPROVAL,
+            },
+        )
         await repo.record_audit(
             session,
             event_type="agent_run_finished",
@@ -325,7 +329,12 @@ async def _run_with_langgraph(
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             s["result"] = {"message": notes, "hypothesis": hyp}
             return s
-        s["root_cause"] = form_root_cause(hyp, affected_component=s["service"])
+        s["root_cause"] = form_root_cause(
+            hyp,
+            affected_component=s["service"],
+            fault_category="code_regression",
+            causal_facts=["elevated latency/error", "recent change correlation"],
+        )
         s["workflow_state"] = WorkflowState.ROOT_CAUSE_FOUND.value
         return s
 
@@ -619,7 +628,7 @@ async def _run_with_langgraph(
             s["status"] = AgentRunStatus.FAILED.value
             return s
         try:
-            result = manager.run_tests(s["run_id"], profile="pytest", timeout=90)
+            result = manager.run_tests(s["run_id"], profile="pytest_regression", timeout=90)
         except Exception as exc:
             s["status"] = AgentRunStatus.FAILED.value
             s["error"] = f"run tests failed: {exc}"

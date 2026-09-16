@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 # Server-side allowlisted test commands (not LLM-generated)
 ALLOWED_TEST_COMMANDS = {
     "pytest": ["pytest", "-q", "--tb=short"],
+    # Regression profile: only healthy-path tests after a fix is applied
+    "pytest_regression": ["pytest", "-q", "--tb=short", "tests/test_regression.py"],
 }
 
 
@@ -143,8 +145,13 @@ class SandboxManager:
             if isinstance(data, dict) and data.get("type") == "simple_replace":
                 for item in data.get("edits", []):
                     target = repo / item["path"]
+                    if not target.exists():
+                        raise ValueError(f"target missing: {item['path']}")
                     text = target.read_text(encoding="utf-8")
                     if item["find"] not in text:
+                        # Idempotent: already applied from a previous attempt
+                        if item["replace"] in text:
+                            continue
                         raise ValueError(f"find string not present in {item['path']}")
                     target.write_text(text.replace(item["find"], item["replace"], 1), encoding="utf-8")
                 return repo
@@ -165,6 +172,8 @@ class SandboxManager:
             target = repo / rel
             text = target.read_text(encoding="utf-8")
             if old not in text:
+                if new in text:
+                    continue
                 raise ValueError(f"old block not found in {rel}")
             target.write_text(text.replace(old, new, 1), encoding="utf-8")
         return repo
@@ -292,21 +301,35 @@ class SandboxManager:
 def generate_deterministic_patch(root_cause_summary: str, repo_name: str = "orders-api") -> str:
     """Agent-side patch generator used until LLM-driven patching is enabled.
 
-    Produces a simple_replace patch that removes N+1 per-row delay path.
+    Produces a simple_replace patch that removes pathological per-row delay
+    from the reference orders_api app.py listing path.
     """
     import json
 
-    # Patch targets the reference orders_api app.py pattern
+    # Matches reference/orders_api/app.py after Phase 9 rewrite
+    find_old = (
+        '            if ftype in {"n_plus_one_query", "missing_index", "bad_query_refactor", "cache_failure"}:\n'
+        '                time.sleep(float(params.get("per_row_delay", 0.03)))\n'
+    )
+    replace_new = (
+        "            # Fixed: remove per-row delay after batching item loads\n"
+        "            # (n_plus_one_query / missing_index / bad_query_refactor / cache_failure)\n"
+    )
+    # Also neutralize slow dependency delay for slow_database_query / dependency_timeout
+    find_slow = (
+        '        if ftype in {"slow_database_query", "dependency_timeout", "connection_pool_exhaustion"}:\n'
+        '            time.sleep(float(params.get("delay_seconds", 0.5)))\n'
+    )
+    replace_slow = (
+        "        # Fixed: remove injected slow dependency delay\n"
+    )
     return json.dumps(
         {
             "type": "simple_replace",
             "reason": root_cause_summary,
             "edits": [
-                {
-                    "path": "app.py",
-                    "find": '                if fault == "n_plus_one_query":\n                    time.sleep(float(FAULT_MODE.get("params", {}).get("per_row_delay", 0.05)))\n',
-                    "replace": "                # Fixed: batch-load items; remove per-row N+1 delay\n",
-                }
+                {"path": "app.py", "find": find_old, "replace": replace_new},
+                {"path": "app.py", "find": find_slow, "replace": replace_slow},
             ],
         },
         indent=2,

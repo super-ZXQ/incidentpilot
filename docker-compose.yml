@@ -1,0 +1,43 @@
+services:
+  incidentpilot-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: incidentpilot
+      POSTGRES_PASSWORD: incidentpilot
+      POSTGRES_DB: incidentpilot_app
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U incidentpilot -d incidentpilot_app"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - ip_pg_app:/var/lib/postgresql/data
+
+  reference-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: reference
+      POSTGRES_PASSWORD: reference
+      POSTGRES_DB: orders
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reference -d orders"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - ip_pg_ref:/var/lib/postgresql/data
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+volumes:
+  ip_pg_app:
+  ip_pg_ref:
