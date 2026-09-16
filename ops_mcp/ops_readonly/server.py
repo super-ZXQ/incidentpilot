@@ -179,7 +179,10 @@ def query_database_readonly(query: str = "SELECT 1") -> dict[str, Any]:
     conn = sqlite3.connect(str(db_path))
     try:
         cur = conn.execute(query)
-        rows = [dict(zip([c[0] for c in cur.description], row)) for row in cur.fetchmany(100)]
+        rows = [
+            dict(zip([c[0] for c in cur.description], row, strict=False))
+            for row in cur.fetchmany(100)
+        ]
         return {"query": query, "rows": rows, "source": str(db_path)}
     except Exception as exc:
         return {"error": str(exc), "query": query}

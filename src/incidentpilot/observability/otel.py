@@ -77,22 +77,22 @@ class _SimpleSpan:
         return self
 
     def __exit__(self, *args: Any) -> None:
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):
             self._span.end()
-        except Exception:
-            pass
 
     def set_attribute(self, key: str, value: Any) -> None:
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):
             self._span.set_attribute(key, value)
-        except Exception:
-            pass
 
     def record_exception(self, exc: Exception) -> None:
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):
             self._span.record_exception(exc)
-        except Exception:
-            pass
 
 
 def start_span(name: str, attributes: dict[str, Any] | None = None):
