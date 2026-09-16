@@ -10,8 +10,8 @@ from incidentpilot.config import Settings
 from incidentpilot.models.enums import AgentRunStatus, WorkflowState
 from incidentpilot.persistence import repo
 from incidentpilot.persistence.session import get_session_factory
-from incidentpilot.tools.fake import register_fake_readonly_tools
 from incidentpilot.tools.gateway import BudgetTracker, ToolGateway, ToolRegistry
+from incidentpilot.tools.mcp_adapter import register_mcp_readonly_tools
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +45,14 @@ def _utcnow() -> str:
 
 def build_tool_gateway(settings: Settings) -> tuple[ToolGateway, Any]:
     registry = ToolRegistry()
-    backend = register_fake_readonly_tools(registry)
+    # Prefer MCP adapter boundary; offline fallback keeps tests deterministic.
+    adapter = register_mcp_readonly_tools(registry)
     budget = BudgetTracker(
         max_tool_calls=settings.max_tool_calls,
         max_steps=settings.max_investigation_steps,
     )
     gateway = ToolGateway(registry=registry, budget=budget)
-    return gateway, backend
+    return gateway, adapter
 
 
 async def run_agent_workflow(
