@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from incidentpilot.agent.executor import get_run_executor
 from incidentpilot.config import Settings, get_settings
-from incidentpilot.models.enums import AgentRunStatus, ApprovalDecision
+from incidentpilot.models.enums import AgentRunStatus
 from incidentpilot.models.schemas import (
     ApprovalOut,
     ApprovalRequest,
@@ -181,9 +181,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if incident is not None:
             await approval_service.update_incident_for_decision(incident, body.decision)
 
-        if body.decision == ApprovalDecision.APPROVE:
-            # Phase 7 will resume workflow for GitHub PR creation.
-            get_run_executor().submit(incident_pk=run.incident_pk, run_id=run.run_id)
+        # Resume workflow: APPROVE -> create PR; REJECT -> NEEDS_HUMAN_INTERVENTION
+        from incidentpilot.agent.approval_resume import resume_after_approval
+
+        await resume_after_approval(run_id=run.run_id, decision=body.decision)
 
         return ApprovalOut.model_validate(approval)
 
