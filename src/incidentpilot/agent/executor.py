@@ -58,14 +58,20 @@ class RunExecutor:
             self._tasks.pop(run_id, None)
 
     async def execute(self, *, incident_pk: str, run_id: str) -> dict[str, Any]:
-        """Execute one agent run. Implemented by graph runner in later phases."""
+        """Execute one agent run."""
         from incidentpilot.agent.graph import run_agent_workflow
+        from incidentpilot.observability.otel import configure_otel, start_span
 
-        return await run_agent_workflow(
-            incident_pk=incident_pk,
-            run_id=run_id,
-            settings=self.settings,
-        )
+        configure_otel(self.settings)
+        with start_span(
+            "agent_run",
+            {"run_id": run_id, "incident_pk": incident_pk},
+        ):
+            return await run_agent_workflow(
+                incident_pk=incident_pk,
+                run_id=run_id,
+                settings=self.settings,
+            )
 
 
 _executor: RunExecutor | None = None

@@ -53,7 +53,7 @@ class Settings(BaseSettings):
 
     # Observability
     otel_service_name: str = Field(default="incidentpilot")
-    otel_console_exporter: bool = Field(default=True)
+    otel_console_exporter: bool = Field(default=False)
     otel_otlp_endpoint: str = Field(default="")
 
     # Sandbox
