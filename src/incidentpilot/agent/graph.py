@@ -297,16 +297,22 @@ async def _run_with_langgraph(
         return s
 
     async def form_hypothesis_node(s: AgentState) -> AgentState:
+        from incidentpilot.agent.reasoning import build_hypothesis
+
         s["workflow_state"] = WorkflowState.FORM_HYPOTHESIS.value
         if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
             return s
-        evidence_ids = [e["evidence_id"] for e in s.get("evidence") or []]
-        if not evidence_ids:
+        evidence = s.get("evidence") or []
+        if len(evidence) < 2:
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+            s["result"] = {
+                "message": "insufficient evidence to form hypothesis",
+                "evidence_count": len(evidence),
+            }
             return s
-        logs = next((e for e in s["evidence"] if e["source_type"] == "logs"), None)
-        metrics = next((e for e in s["evidence"] if e["source_type"] == "metrics"), None)
+        logs = next((e for e in evidence if e["source_type"] == "logs"), None)
+        metrics = next((e for e in evidence if e["source_type"] == "metrics"), None)
         statement = (
             f"Service {s['service']} is degraded due to a recent regression causing "
             f"symptom: {s['symptom']}"
@@ -321,17 +327,12 @@ async def _run_with_langgraph(
                 f"Elevated latency/error rate in {s['service']} correlates with recent change "
                 f"({s['symptom']})"
             )
-        s["hypotheses"] = [
-            {
-                "statement": statement,
-                "evidence_ids": evidence_ids,
-                "status": "OPEN",
-                "confidence": "MEDIUM",
-            }
-        ]
+        s["hypotheses"] = [build_hypothesis(statement, evidence, confidence="MEDIUM")]
         return s
 
     async def verify_hypothesis_node(s: AgentState) -> AgentState:
+        from incidentpilot.agent.reasoning import form_root_cause, verify_hypothesis
+
         s["workflow_state"] = WorkflowState.VERIFY_HYPOTHESIS.value
         if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
             return s
@@ -346,7 +347,7 @@ async def _run_with_langgraph(
             "read_source_code",
             {
                 "repository": s.get("repository", ""),
-                "path": "app/services/orders.py",
+                "path": "app.py",
             },
         )
         s["tool_calls"] = list(s.get("tool_calls") or []) + [source]
@@ -367,21 +368,25 @@ async def _run_with_langgraph(
 
         hyp = dict(s["hypotheses"][0])
         hyp["evidence_ids"] = [e["evidence_id"] for e in extra_evidence]
-        hyp["verified"] = True
-        hyp["status"] = "VERIFIED"
-        hyp["verification_notes"] = "Metrics, logs, git history and source inspection support hypothesis."
+        ok, notes = verify_hypothesis(hyp, extra_evidence, min_evidence=2)
+        hyp["verified"] = ok
+        hyp["status"] = "VERIFIED" if ok else "REJECTED"
+        hyp["verification_notes"] = notes
         s["hypotheses"] = [hyp]
-        s["root_cause"] = {
-            "summary": hyp["statement"],
-            "evidence_ids": hyp["evidence_ids"],
-            "affected_component": s["service"],
-        }
+
+        if not ok:
+            s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+            s["result"] = {"message": notes, "hypothesis": hyp}
+            return s
+
+        s["root_cause"] = form_root_cause(hyp, affected_component=s["service"])
         s["workflow_state"] = WorkflowState.ROOT_CAUSE_FOUND.value
-        # Phase 2 stops before sandbox; Phase 6+ continues to patch/tests.
+        # Phase 5 stops before sandbox; Phase 6+ continues to patch/tests.
         s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
         s["result"] = {
-            "phase": 2,
-            "message": "Root cause identified with fake tools via Tool Gateway.",
+            "phase": 5,
+            "message": "Root cause verified with evidence-bound hypothesis.",
             "root_cause": s["root_cause"],
         }
         return s
