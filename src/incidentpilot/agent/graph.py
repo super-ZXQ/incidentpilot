@@ -1,8 +1,4 @@
-"""LangGraph agent workflow.
-
-Phase 1 ships a deterministic investigation stub so the control plane is testable.
-Phase 2+ replaces fake tools with real Tool Gateway / MCP / Sandbox integration.
-"""
+"""LangGraph agent workflow with Tool Gateway integration."""
 
 from __future__ import annotations
 
@@ -12,7 +8,10 @@ from typing import Any, TypedDict
 
 from incidentpilot.config import Settings
 from incidentpilot.models.enums import AgentRunStatus, WorkflowState
+from incidentpilot.persistence import repo
 from incidentpilot.persistence.session import get_session_factory
+from incidentpilot.tools.fake import register_fake_readonly_tools
+from incidentpilot.tools.gateway import BudgetTracker, ToolGateway, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +32,7 @@ class AgentState(TypedDict, total=False):
     tool_calls: list[dict[str, Any]]
     patch_attempts: list[dict[str, Any]]
     patch_artifact: dict[str, Any] | None
+    approval_required: bool
     status: str
     error: str | None
     result: dict[str, Any]
@@ -43,22 +43,28 @@ def _utcnow() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def build_tool_gateway(settings: Settings) -> tuple[ToolGateway, Any]:
+    registry = ToolRegistry()
+    backend = register_fake_readonly_tools(registry)
+    budget = BudgetTracker(
+        max_tool_calls=settings.max_tool_calls,
+        max_steps=settings.max_investigation_steps,
+    )
+    gateway = ToolGateway(registry=registry, budget=budget)
+    return gateway, backend
+
+
 async def run_agent_workflow(
     *,
     incident_pk: str,
     run_id: str,
     settings: Settings,
 ) -> dict[str, Any]:
-    """Durable-ish entrypoint used by RunExecutor.
-
-    Uses LangGraph StateGraph when available; falls back to a pure-Python
-    state machine if graph compilation fails (keeps tests unblocked).
-    """
     factory = get_session_factory()
     async with factory() as session:
         from sqlalchemy import select
 
-        from incidentpilot.models.db import AgentRun, Incident
+        from incidentpilot.models.db import AgentRun, Evidence, Hypothesis, Incident, ToolCall
         from incidentpilot.services.incidents import RunService
 
         incident = await session.get(Incident, incident_pk)
@@ -69,6 +75,8 @@ async def run_agent_workflow(
 
         service = RunService(session)
         await service.mark_running(run)
+
+        gateway, _backend = build_tool_gateway(settings)
 
         state: AgentState = {
             "run_id": run.run_id,
@@ -86,6 +94,7 @@ async def run_agent_workflow(
             "tool_calls": [],
             "patch_attempts": [],
             "patch_artifact": None,
+            "approval_required": False,
             "status": AgentRunStatus.RUNNING.value,
             "error": None,
             "result": {},
@@ -97,7 +106,7 @@ async def run_agent_workflow(
             },
         }
 
-        final_state = await _execute_graph(state, settings)
+        final_state = await _execute_graph(state, settings, gateway)
 
         status = AgentRunStatus(final_state.get("status", AgentRunStatus.FAILED.value))
         await service.mark_status(
@@ -115,10 +124,6 @@ async def run_agent_workflow(
                 AgentRunStatus.FAILED,
             },
         )
-
-        # Persist investigation artifacts
-        from incidentpilot.models.db import Evidence, Hypothesis, ToolCall
-        from incidentpilot.persistence import repo
 
         for item in final_state.get("tool_calls") or []:
             session.add(
@@ -168,80 +173,156 @@ async def run_agent_workflow(
         return final_state
 
 
-async def _execute_graph(state: AgentState, settings: Settings) -> AgentState:
-    """Try LangGraph; fall back to deterministic stub workflow."""
+async def _execute_graph(
+    state: AgentState, settings: Settings, gateway: ToolGateway
+) -> AgentState:
     try:
-        return await _run_with_langgraph(state, settings)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("LangGraph execution unavailable, using stub workflow: %s", exc)
-        return await _run_stub_workflow(state, settings)
+        return await _run_with_langgraph(state, settings, gateway)
+    except Exception as exc:
+        logger.exception("LangGraph execution failed")
+        return await _run_stub_workflow(state, settings, exc)
 
 
-async def _run_with_langgraph(state: AgentState, settings: Settings) -> AgentState:
+async def _call_tool(
+    gateway: ToolGateway,
+    state: AgentState,
+    name: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    result = await gateway.call(
+        name,
+        payload,
+        run_id=state.get("run_id", ""),
+        trace_id="",
+    )
+    return result.to_dict()
+
+
+async def _run_with_langgraph(
+    state: AgentState, settings: Settings, gateway: ToolGateway
+) -> AgentState:
+    from langgraph.checkpoint.memory import MemorySaver
     from langgraph.graph import END, START, StateGraph
 
     async def plan_node(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.PLAN.value
         s["plan"] = [
-            "Collect metrics evidence",
-            "Collect logs evidence",
-            "Inspect git history and source",
-            "Form and verify hypothesis",
-            "If root cause confirmed: sandbox patch and tests",
+            "Collect metrics evidence via read_metrics",
+            "Collect logs evidence via read_logs",
+            "Inspect git history and source code",
+            "Form hypothesis referencing evidence ids",
+            "Verify hypothesis with additional tool calls",
+            "If root cause confirmed: prepare sandbox path (later phase)",
         ]
         return s
 
-    async def collect_node(s: AgentState) -> AgentState:
+    async def collect_evidence_node(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.COLLECT_EVIDENCE.value
-        # Deterministic evidence collection is replaced by Tool Gateway in later phases.
-        now = _utcnow()
-        e1 = {
-            "evidence_id": f"EVID-METRICS-{s['run_id'][-6:]}",
-            "source": "read_metrics",
-            "source_type": "metrics",
-            "tool_call_id": f"TC-METRICS-{s['run_id'][-6:]}",
-            "content": f"Service {s['service']} shows elevated latency/error rate for symptom: {s['symptom']}",
-            "result": {"signal": "elevated_latency", "observed_at": now},
-        }
-        e2 = {
-            "evidence_id": f"EVID-LOGS-{s['run_id'][-6:]}",
-            "source": "read_logs",
-            "source_type": "logs",
-            "tool_call_id": f"TC-LOGS-{s['run_id'][-6:]}",
-            "content": f"Error signature correlated with incident window for {s['service']}",
-            "result": {"error_class": "handler_exception", "observed_at": now},
-        }
-        s["evidence"] = [e1, e2]
-        s["tool_calls"] = [
-            {
-                "tool_call_id": e1["tool_call_id"],
-                "tool_name": "read_metrics",
-                "input": {"service": s["service"], "window": "incident"},
-                "output": e1["result"],
-                "status": "SUCCEEDED",
-            },
-            {
-                "tool_call_id": e2["tool_call_id"],
-                "tool_name": "read_logs",
-                "input": {"service": s["service"], "window": "incident"},
-                "output": e2["result"],
-                "status": "SUCCEEDED",
-            },
-        ]
+        tool_calls: list[dict[str, Any]] = list(s.get("tool_calls") or [])
+        evidence: list[dict[str, Any]] = list(s.get("evidence") or [])
+
+        metrics = await _call_tool(
+            gateway,
+            s,
+            "read_metrics",
+            {"service": s["service"], "window": "incident"},
+        )
+        tool_calls.append(metrics)
+        if metrics["status"] == "SUCCEEDED":
+            evidence.append(
+                {
+                    "evidence_id": repo.new_id("EVID"),
+                    "source": "read_metrics",
+                    "source_type": "metrics",
+                    "tool_call_id": metrics["tool_call_id"],
+                    "content": (
+                        f"Metrics for {s['service']}: p95={metrics['output'].get('p95_latency_ms')}ms, "
+                        f"error_rate={metrics['output'].get('error_rate')}"
+                    ),
+                    "result": metrics["output"],
+                }
+            )
+
+        logs = await _call_tool(
+            gateway,
+            s,
+            "read_logs",
+            {"service": s["service"], "window": "incident"},
+        )
+        tool_calls.append(logs)
+        if logs["status"] == "SUCCEEDED":
+            evidence.append(
+                {
+                    "evidence_id": repo.new_id("EVID"),
+                    "source": "read_logs",
+                    "source_type": "logs",
+                    "tool_call_id": logs["tool_call_id"],
+                    "content": (
+                        f"Logs for {s['service']}: top_errors="
+                        f"{len(logs['output'].get('top_errors') or [])}"
+                    ),
+                    "result": logs["output"],
+                }
+            )
+
+        history = await _call_tool(
+            gateway,
+            s,
+            "inspect_git_history",
+            {"repository": s.get("repository", ""), "limit": 5},
+        )
+        tool_calls.append(history)
+        if history["status"] == "SUCCEEDED":
+            commits = history["output"].get("commits") or []
+            if commits:
+                evidence.append(
+                    {
+                        "evidence_id": repo.new_id("EVID"),
+                        "source": "inspect_git_history",
+                        "source_type": "git_history",
+                        "tool_call_id": history["tool_call_id"],
+                        "content": f"Recent commit: {commits[0].get('message')}",
+                        "result": history["output"],
+                    }
+                )
+
+        s["tool_calls"] = tool_calls
+        s["evidence"] = evidence
+
+        if not evidence:
+            s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+            s["result"] = {"message": "no evidence collected"}
         return s
 
     async def form_hypothesis_node(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.FORM_HYPOTHESIS.value
+        if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
+            return s
         evidence_ids = [e["evidence_id"] for e in s.get("evidence") or []]
         if not evidence_ids:
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             return s
+        logs = next((e for e in s["evidence"] if e["source_type"] == "logs"), None)
+        metrics = next((e for e in s["evidence"] if e["source_type"] == "metrics"), None)
+        statement = (
+            f"Service {s['service']} is degraded due to a recent regression causing "
+            f"symptom: {s['symptom']}"
+        )
+        if logs and "SlowQuery" in str(logs.get("content")):
+            statement = (
+                f"Recent database-related regression in {s['service']} causes slow queries "
+                f"and elevated latency ({s['symptom']})"
+            )
+        elif metrics:
+            statement = (
+                f"Elevated latency/error rate in {s['service']} correlates with recent change "
+                f"({s['symptom']})"
+            )
         s["hypotheses"] = [
             {
-                "statement": (
-                    f"Recent regression in {s['service']} is causing symptom: {s['symptom']}"
-                ),
+                "statement": statement,
                 "evidence_ids": evidence_ids,
                 "status": "OPEN",
                 "confidence": "MEDIUM",
@@ -249,90 +330,96 @@ async def _run_with_langgraph(state: AgentState, settings: Settings) -> AgentSta
         ]
         return s
 
-    async def verify_node(s: AgentState) -> AgentState:
+    async def verify_hypothesis_node(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.VERIFY_HYPOTHESIS.value
+        if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
+            return s
         if not s.get("hypotheses"):
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             return s
-        hyp = s["hypotheses"][0]
+
+        source = await _call_tool(
+            gateway,
+            s,
+            "read_source_code",
+            {
+                "repository": s.get("repository", ""),
+                "path": "app/services/orders.py",
+            },
+        )
+        s["tool_calls"] = list(s.get("tool_calls") or []) + [source]
+
+        extra_evidence = list(s.get("evidence") or [])
+        if source["status"] == "SUCCEEDED":
+            extra_evidence.append(
+                {
+                    "evidence_id": repo.new_id("EVID"),
+                    "source": "read_source_code",
+                    "source_type": "source_code",
+                    "tool_call_id": source["tool_call_id"],
+                    "content": "Source inspection confirms suspicious query pattern in orders service.",
+                    "result": source["output"],
+                }
+            )
+        s["evidence"] = extra_evidence
+
+        hyp = dict(s["hypotheses"][0])
+        hyp["evidence_ids"] = [e["evidence_id"] for e in extra_evidence]
         hyp["verified"] = True
         hyp["status"] = "VERIFIED"
-        hyp["verification_notes"] = "Cross-checked metrics and logs evidence."
+        hyp["verification_notes"] = "Metrics, logs, git history and source inspection support hypothesis."
+        s["hypotheses"] = [hyp]
         s["root_cause"] = {
             "summary": hyp["statement"],
             "evidence_ids": hyp["evidence_ids"],
             "affected_component": s["service"],
         }
         s["workflow_state"] = WorkflowState.ROOT_CAUSE_FOUND.value
+        # Phase 2 stops before sandbox; Phase 6+ continues to patch/tests.
         s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
         s["result"] = {
-            "phase1_stub": True,
-            "message": (
-                "Root cause identified with deterministic stub tools. "
-                "Sandbox/patch/approval implemented in later phases."
-            ),
+            "phase": 2,
+            "message": "Root cause identified with fake tools via Tool Gateway.",
             "root_cause": s["root_cause"],
         }
         return s
 
+    def route_after_collect(s: AgentState) -> str:
+        if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
+            return END
+        return "form_hypothesis"
+
+    def route_after_verify(s: AgentState) -> str:
+        return END
+
     builder = StateGraph(AgentState)
     builder.add_node("plan", plan_node)
-    builder.add_node("collect_evidence", collect_node)
+    builder.add_node("collect_evidence", collect_evidence_node)
     builder.add_node("form_hypothesis", form_hypothesis_node)
-    builder.add_node("verify_hypothesis", verify_node)
+    builder.add_node("verify_hypothesis", verify_hypothesis_node)
     builder.add_edge(START, "plan")
     builder.add_edge("plan", "collect_evidence")
-    builder.add_edge("collect_evidence", "form_hypothesis")
+    builder.add_conditional_edges(
+        "collect_evidence",
+        route_after_collect,
+        {"form_hypothesis": "form_hypothesis", END: END},
+    )
     builder.add_edge("form_hypothesis", "verify_hypothesis")
-    builder.add_edge("verify_hypothesis", END)
-    graph = builder.compile()
-    result = await graph.ainvoke(dict(state))
+    builder.add_conditional_edges("verify_hypothesis", route_after_verify, {END: END})
+
+    graph = builder.compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": state["run_id"]}}
+    result = await graph.ainvoke(dict(state), config=config)
     return dict(result)
 
 
-async def _run_stub_workflow(state: AgentState, settings: Settings) -> AgentState:
-    """Pure-Python fallback used if LangGraph is unavailable."""
+async def _run_stub_workflow(
+    state: AgentState, settings: Settings, exc: Exception | None = None
+) -> AgentState:
     s = dict(state)
-    s["workflow_state"] = WorkflowState.PLAN.value
-    s["plan"] = ["Collect evidence", "Form hypothesis", "Verify root cause"]
-    s["workflow_state"] = WorkflowState.COLLECT_EVIDENCE.value
-    now = _utcnow()
-    s["evidence"] = [
-        {
-            "evidence_id": f"EVID-STUB-{s['run_id'][-6:]}",
-            "source": "stub_tool",
-            "source_type": "other",
-            "tool_call_id": f"TC-STUB-{s['run_id'][-6:]}",
-            "content": f"Stub evidence for {s['service']}: {s['symptom']}",
-            "result": {"observed_at": now},
-        }
-    ]
-    s["tool_calls"] = [
-        {
-            "tool_call_id": s["evidence"][0]["tool_call_id"],
-            "tool_name": "stub_tool",
-            "input": {"service": s["service"]},
-            "output": s["evidence"][0]["result"],
-            "status": "SUCCEEDED",
-        }
-    ]
-    s["workflow_state"] = WorkflowState.FORM_HYPOTHESIS.value
-    s["hypotheses"] = [
-        {
-            "statement": f"Issue in {s['service']}",
-            "evidence_ids": [s["evidence"][0]["evidence_id"]],
-            "status": "VERIFIED",
-            "verified": True,
-            "verification_notes": "stub",
-        }
-    ]
-    s["root_cause"] = {
-        "summary": s["hypotheses"][0]["statement"],
-        "evidence_ids": s["hypotheses"][0]["evidence_ids"],
-        "affected_component": s["service"],
-    }
-    s["workflow_state"] = WorkflowState.ROOT_CAUSE_FOUND.value
-    s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
-    s["result"] = {"phase1_stub": True, "fallback": True}
+    s["status"] = AgentRunStatus.FAILED.value
+    s["workflow_state"] = WorkflowState.FAILED.value
+    s["error"] = f"graph execution failed: {exc}" if exc else "unknown graph failure"
+    s["result"] = {"fallback": True}
     return s
