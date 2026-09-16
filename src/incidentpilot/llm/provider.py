@@ -1,0 +1,186 @@
+"""LLM provider abstraction.
+
+Agent nodes must not create provider clients directly.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class LLMMessage:
+    role: str
+    content: str
+
+
+@dataclass
+class LLMResponse:
+    content: str
+    provider: str
+    model: str
+    usage: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+class LLMProvider(ABC):
+    @property
+    @abstractmethod
+    def provider_name(self) -> str: ...
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str: ...
+
+    @abstractmethod
+    def supports_tool_calling(self) -> bool: ...
+
+    @abstractmethod
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        *,
+        system: str | None = None,
+        temperature: float = 0.0,
+    ) -> LLMResponse: ...
+
+
+class FakeLLMProvider(LLMProvider):
+    """Deterministic provider for local development and tests."""
+
+    def __init__(
+        self,
+        model_name: str = "fake-model-v1",
+        responses: list[str] | None = None,
+    ) -> None:
+        self._model = model_name
+        self._responses = list(responses or [])
+        self._calls = 0
+
+    @property
+    def provider_name(self) -> str:
+        return "fake"
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    def supports_tool_calling(self) -> bool:
+        return False
+
+    def enqueue(self, response: str) -> None:
+        self._responses.append(response)
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        *,
+        system: str | None = None,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        self._calls += 1
+        if self._responses:
+            content = self._responses.pop(0)
+        else:
+            last = messages[-1].content if messages else ""
+            content = f"FAKE_RESPONSE:{last[:200]}"
+        return LLMResponse(
+            content=content,
+            provider=self.provider_name,
+            model=self.model_name,
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+
+
+class OpenAICompatibleProvider(LLMProvider):
+    """OpenAI-compatible HTTP adapter using httpx."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        supports_tools: bool = True,
+        timeout: float = 60.0,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model = model
+        self._supports_tools = supports_tools
+        self._timeout = timeout
+
+    @property
+    def provider_name(self) -> str:
+        return "openai-compatible"
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    def supports_tool_calling(self) -> bool:
+        return self._supports_tools
+
+    async def complete(
+        self,
+        messages: list[LLMMessage],
+        *,
+        system: str | None = None,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        import httpx
+
+        payload_messages: list[dict[str, str]] = []
+        if system:
+            payload_messages.append({"role": "system", "content": system})
+        payload_messages.extend({"role": m.role, "content": m.content} for m in messages)
+
+        payload = {
+            "model": self._model,
+            "messages": payload_messages,
+            "temperature": temperature,
+        }
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(
+                f"{self._base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        content = ""
+        choices = data.get("choices") or []
+        if choices:
+            message = choices[0].get("message") or {}
+            content = message.get("content") or ""
+        usage = data.get("usage") or {}
+        return LLMResponse(
+            content=content,
+            provider=self.provider_name,
+            model=self._model,
+            usage={
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            },
+            raw=data,
+        )
+
+
+def build_llm_provider(
+    *,
+    llm_enabled: bool,
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> LLMProvider:
+    if not llm_enabled or not api_key:
+        return FakeLLMProvider()
+    return OpenAICompatibleProvider(base_url=base_url, api_key=api_key, model=model)
