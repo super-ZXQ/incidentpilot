@@ -1,0 +1,313 @@
+"""Sandbox Manager: isolated patch application and test execution.
+
+Agent never gets an unrestricted shell. Commands come from server-side policy.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+import shutil
+import subprocess
+import tempfile
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from incidentpilot.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
+
+# Server-side allowlisted test commands (not LLM-generated)
+ALLOWED_TEST_COMMANDS = {
+    "pytest": ["pytest", "-q", "--tb=short"],
+}
+
+
+@dataclass
+class SandboxResult:
+    ok: bool
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_ms: float
+    command: list[str] = field(default_factory=list)
+    mode: str = "local"
+
+
+@dataclass
+class PatchArtifactData:
+    patch_artifact_id: str
+    base_commit_sha: str
+    patch_diff: str
+    patch_hash: str
+    test_run_id: str
+    created_at: str
+    immutable: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "patch_artifact_id": self.patch_artifact_id,
+            "base_commit_sha": self.base_commit_sha,
+            "patch_diff": self.patch_diff,
+            "patch_hash": self.patch_hash,
+            "test_run_id": self.test_run_id,
+            "created_at": self.created_at,
+            "immutable": self.immutable,
+        }
+
+
+def hash_patch(diff: str) -> str:
+    return hashlib.sha256(diff.encode("utf-8")).hexdigest()
+
+
+def docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        return True
+    except Exception:
+        return False
+
+
+class SandboxManager:
+    """Creates ephemeral workspace, applies patch, runs allowlisted tests."""
+
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or get_settings()
+        self._workspaces: dict[str, Path] = {}
+
+    def create_workspace(self, run_id: str, source_path: str | Path) -> Path:
+        source = Path(source_path).resolve()
+        if not source.exists():
+            raise FileNotFoundError(f"source path not found: {source}")
+        root = Path(tempfile.mkdtemp(prefix=f"incidentpilot-{run_id[:8]}-"))
+        dest = root / "repo"
+        if source.is_dir():
+            shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.db", "var"))
+        else:
+            dest.mkdir(parents=True)
+            shutil.copy2(source, dest / source.name)
+        self._workspaces[run_id] = root
+        return dest
+
+    def destroy_workspace(self, run_id: str) -> None:
+        root = self._workspaces.pop(run_id, None)
+        if root is not None and root.exists():
+            shutil.rmtree(root, ignore_errors=True)
+
+    def apply_patch(self, run_id: str, patch_diff: str) -> Path:
+        root = self._workspaces.get(run_id)
+        if root is None:
+            raise RuntimeError("workspace not created")
+        repo = root / "repo"
+        # Prefer git apply if possible; otherwise write a unified-diff-ish file and
+        # apply simple replacements for test fixtures.
+        patch_path = root / "patch.diff"
+        patch_path.write_text(patch_diff, encoding="utf-8")
+        try:
+            subprocess.run(
+                ["git", "apply", "--unsafe-paths", "--directory", str(repo), str(patch_path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            return repo
+        except Exception:
+            # Fallback: interpret a simple "file path / find / replace" JSON patch used in tests
+            return self._apply_simple_patch(repo, patch_diff)
+
+    def _apply_simple_patch(self, repo: Path, patch_diff: str) -> Path:
+        """Apply a deterministic simple patch format used by Agent FakePatcher.
+
+        Format:
+        === FILE: relative/path.py ===
+        --- OLD
+        +++ NEW
+        """
+        import json
+
+        # Also accept JSON patches
+        try:
+            data = json.loads(patch_diff)
+            if isinstance(data, dict) and data.get("type") == "simple_replace":
+                for item in data.get("edits", []):
+                    target = repo / item["path"]
+                    text = target.read_text(encoding="utf-8")
+                    if item["find"] not in text:
+                        raise ValueError(f"find string not present in {item['path']}")
+                    target.write_text(text.replace(item["find"], item["replace"], 1), encoding="utf-8")
+                return repo
+        except json.JSONDecodeError:
+            pass
+
+        # Text block format
+        blocks = patch_diff.split("=== FILE:")
+        for block in blocks[1:]:
+            header, _, body = block.partition("===\n")
+            rel = header.strip()
+            old_marker = "--- OLD\n"
+            new_marker = "+++ NEW\n"
+            if old_marker not in body or new_marker not in body:
+                continue
+            old = body.split(old_marker, 1)[1].split(new_marker, 1)[0]
+            new = body.split(new_marker, 1)[1]
+            target = repo / rel
+            text = target.read_text(encoding="utf-8")
+            if old not in text:
+                raise ValueError(f"old block not found in {rel}")
+            target.write_text(text.replace(old, new, 1), encoding="utf-8")
+        return repo
+
+    def run_tests(self, run_id: str, profile: str = "pytest", timeout: int = 120) -> SandboxResult:
+        if profile not in ALLOWED_TEST_COMMANDS:
+            raise ValueError(f"test profile not allowlisted: {profile}")
+        cmd = ALLOWED_TEST_COMMANDS[profile]
+        root = self._workspaces.get(run_id)
+        if root is None:
+            raise RuntimeError("workspace not created")
+        repo = root / "repo"
+
+        use_docker = self.settings.sandbox_enabled and docker_available()
+        started = time.perf_counter()
+        if use_docker:
+            return self._run_in_docker(run_id, repo, cmd, timeout, started)
+        return self._run_local(run_id, repo, cmd, timeout, started)
+
+    def _run_local(
+        self, run_id: str, repo: Path, cmd: list[str], timeout: int, started: float
+    ) -> SandboxResult:
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
+        proc = subprocess.run(
+            cmd,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
+        duration = (time.perf_counter() - started) * 1000
+        return SandboxResult(
+            ok=proc.returncode == 0,
+            exit_code=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+            duration_ms=duration,
+            command=cmd,
+            mode="local",
+        )
+
+    def _run_in_docker(
+        self, run_id: str, repo: Path, cmd: list[str], timeout: int, started: float
+    ) -> SandboxResult:
+        image = self.settings.sandbox_image
+        network = self.settings.sandbox_network or "none"
+        docker_cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            network,
+            "--user",
+            "65534:65534",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--memory",
+            "512m",
+            "--cpus",
+            "1.0",
+            "--pids-limit",
+            "128",
+            "-v",
+            f"{repo}:/workspace:rw",
+            "-w",
+            "/workspace",
+            image,
+            *cmd,
+        ]
+        try:
+            proc = subprocess.run(
+                docker_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout + 30,
+            )
+            duration = (time.perf_counter() - started) * 1000
+            return SandboxResult(
+                ok=proc.returncode == 0,
+                exit_code=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+                duration_ms=duration,
+                command=docker_cmd,
+                mode="docker",
+            )
+        except Exception as exc:
+            duration = (time.perf_counter() - started) * 1000
+            return SandboxResult(
+                ok=False,
+                exit_code=-1,
+                stdout="",
+                stderr=str(exc),
+                duration_ms=duration,
+                command=docker_cmd,
+                mode="docker_error",
+            )
+
+    def export_patch_artifact(
+        self,
+        run_id: str,
+        *,
+        base_commit_sha: str,
+        patch_diff: str,
+        test_run_id: str,
+        created_at: str | None = None,
+    ) -> PatchArtifactData:
+        from datetime import UTC, datetime
+
+        return PatchArtifactData(
+            patch_artifact_id=f"PA-{uuid.uuid4().hex[:12]}",
+            base_commit_sha=base_commit_sha,
+            patch_diff=patch_diff,
+            patch_hash=hash_patch(patch_diff),
+            test_run_id=test_run_id,
+            created_at=created_at or datetime.now(UTC).isoformat(),
+            immutable=True,
+        )
+
+
+def generate_deterministic_patch(root_cause_summary: str, repo_name: str = "orders-api") -> str:
+    """Agent-side patch generator used until LLM-driven patching is enabled.
+
+    Produces a simple_replace patch that removes N+1 per-row delay path.
+    """
+    import json
+
+    # Patch targets the reference orders_api app.py pattern
+    return json.dumps(
+        {
+            "type": "simple_replace",
+            "reason": root_cause_summary,
+            "edits": [
+                {
+                    "path": "app.py",
+                    "find": '                if fault == "n_plus_one_query":\n                    time.sleep(float(FAULT_MODE.get("params", {}).get("per_row_delay", 0.05)))\n',
+                    "replace": "                # Fixed: batch-load items; remove per-row N+1 delay\n",
+                }
+            ],
+        },
+        indent=2,
+    )

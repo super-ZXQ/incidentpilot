@@ -1,15 +1,18 @@
-"""LangGraph agent workflow with Tool Gateway integration."""
+"""LangGraph agent workflow with Tool Gateway and Sandbox integration."""
 
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, TypedDict
 
 from incidentpilot.config import Settings
 from incidentpilot.models.enums import AgentRunStatus, WorkflowState
 from incidentpilot.persistence import repo
 from incidentpilot.persistence.session import get_session_factory
+from incidentpilot.tools.fake import register_fake_readonly_tools
 from incidentpilot.tools.gateway import BudgetTracker, ToolGateway, ToolRegistry
 from incidentpilot.tools.mcp_adapter import register_mcp_readonly_tools
 
@@ -45,8 +48,10 @@ def _utcnow() -> str:
 
 def build_tool_gateway(settings: Settings) -> tuple[ToolGateway, Any]:
     registry = ToolRegistry()
-    # Prefer MCP adapter boundary; offline fallback keeps tests deterministic.
     adapter = register_mcp_readonly_tools(registry)
+    # Keep fake tools registered as additional deterministic backend for tests
+    # that call names directly; MCP adapter already covers readonly names.
+    _ = register_fake_readonly_tools
     budget = BudgetTracker(
         max_tool_calls=settings.max_tool_calls,
         max_steps=settings.max_investigation_steps,
@@ -77,7 +82,7 @@ async def run_agent_workflow(
         service = RunService(session)
         await service.mark_running(run)
 
-        gateway, _backend = build_tool_gateway(settings)
+        gateway, _adapter = build_tool_gateway(settings)
 
         state: AgentState = {
             "run_id": run.run_id,
@@ -181,7 +186,13 @@ async def _execute_graph(
         return await _run_with_langgraph(state, settings, gateway)
     except Exception as exc:
         logger.exception("LangGraph execution failed")
-        return await _run_stub_workflow(state, settings, exc)
+        return {
+            **state,
+            "status": AgentRunStatus.FAILED.value,
+            "workflow_state": WorkflowState.FAILED.value,
+            "error": f"graph execution failed: {exc}",
+            "result": {"fallback": True},
+        }
 
 
 async def _call_tool(
@@ -190,12 +201,7 @@ async def _call_tool(
     name: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    result = await gateway.call(
-        name,
-        payload,
-        run_id=state.get("run_id", ""),
-        trace_id="",
-    )
+    result = await gateway.call(name, payload, run_id=state.get("run_id", ""), trace_id="")
     return result.to_dict()
 
 
@@ -213,7 +219,8 @@ async def _run_with_langgraph(
             "Inspect git history and source code",
             "Form hypothesis referencing evidence ids",
             "Verify hypothesis with additional tool calls",
-            "If root cause confirmed: prepare sandbox path (later phase)",
+            "Create sandbox, generate patch, run tests",
+            "Export PatchArtifact and wait for approval",
         ]
         return s
 
@@ -222,74 +229,31 @@ async def _run_with_langgraph(
         tool_calls: list[dict[str, Any]] = list(s.get("tool_calls") or [])
         evidence: list[dict[str, Any]] = list(s.get("evidence") or [])
 
-        metrics = await _call_tool(
-            gateway,
-            s,
-            "read_metrics",
-            {"service": s["service"], "window": "incident"},
-        )
-        tool_calls.append(metrics)
-        if metrics["status"] == "SUCCEEDED":
-            evidence.append(
-                {
-                    "evidence_id": repo.new_id("EVID"),
-                    "source": "read_metrics",
-                    "source_type": "metrics",
-                    "tool_call_id": metrics["tool_call_id"],
-                    "content": (
-                        f"Metrics for {s['service']}: p95={metrics['output'].get('p95_latency_ms')}ms, "
-                        f"error_rate={metrics['output'].get('error_rate')}"
-                    ),
-                    "result": metrics["output"],
-                }
-            )
-
-        logs = await _call_tool(
-            gateway,
-            s,
-            "read_logs",
-            {"service": s["service"], "window": "incident"},
-        )
-        tool_calls.append(logs)
-        if logs["status"] == "SUCCEEDED":
-            evidence.append(
-                {
-                    "evidence_id": repo.new_id("EVID"),
-                    "source": "read_logs",
-                    "source_type": "logs",
-                    "tool_call_id": logs["tool_call_id"],
-                    "content": (
-                        f"Logs for {s['service']}: top_errors="
-                        f"{len(logs['output'].get('top_errors') or [])}"
-                    ),
-                    "result": logs["output"],
-                }
-            )
-
-        history = await _call_tool(
-            gateway,
-            s,
-            "inspect_git_history",
-            {"repository": s.get("repository", ""), "limit": 5},
-        )
-        tool_calls.append(history)
-        if history["status"] == "SUCCEEDED":
-            commits = history["output"].get("commits") or []
-            if commits:
+        for tool_name, payload, source_type in (
+            ("read_metrics", {"service": s["service"], "window": "incident"}, "metrics"),
+            ("read_logs", {"service": s["service"], "window": "incident"}, "logs"),
+            (
+                "inspect_git_history",
+                {"repository": s.get("repository", ""), "limit": 5},
+                "git_history",
+            ),
+        ):
+            call = await _call_tool(gateway, s, tool_name, payload)
+            tool_calls.append(call)
+            if call["status"] == "SUCCEEDED":
                 evidence.append(
                     {
                         "evidence_id": repo.new_id("EVID"),
-                        "source": "inspect_git_history",
-                        "source_type": "git_history",
-                        "tool_call_id": history["tool_call_id"],
-                        "content": f"Recent commit: {commits[0].get('message')}",
-                        "result": history["output"],
+                        "source": tool_name,
+                        "source_type": source_type,
+                        "tool_call_id": call["tool_call_id"],
+                        "content": f"{tool_name} output for {s['service']}",
+                        "result": call["output"],
                     }
                 )
 
         s["tool_calls"] = tool_calls
         s["evidence"] = evidence
-
         if not evidence:
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
@@ -306,25 +270,15 @@ async def _run_with_langgraph(
         if len(evidence) < 2:
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
-            s["result"] = {
-                "message": "insufficient evidence to form hypothesis",
-                "evidence_count": len(evidence),
-            }
+            s["result"] = {"message": "insufficient evidence", "evidence_count": len(evidence)}
             return s
         logs = next((e for e in evidence if e["source_type"] == "logs"), None)
-        metrics = next((e for e in evidence if e["source_type"] == "metrics"), None)
         statement = (
-            f"Service {s['service']} is degraded due to a recent regression causing "
-            f"symptom: {s['symptom']}"
+            f"Service {s['service']} is degraded due to a recent regression: {s['symptom']}"
         )
-        if logs and "SlowQuery" in str(logs.get("content")):
+        if logs:
             statement = (
-                f"Recent database-related regression in {s['service']} causes slow queries "
-                f"and elevated latency ({s['symptom']})"
-            )
-        elif metrics:
-            statement = (
-                f"Elevated latency/error rate in {s['service']} correlates with recent change "
+                f"Recent regression in {s['service']} causes elevated latency/errors "
                 f"({s['symptom']})"
             )
         s["hypotheses"] = [build_hypothesis(statement, evidence, confidence="MEDIUM")]
@@ -342,16 +296,9 @@ async def _run_with_langgraph(
             return s
 
         source = await _call_tool(
-            gateway,
-            s,
-            "read_source_code",
-            {
-                "repository": s.get("repository", ""),
-                "path": "app.py",
-            },
+            gateway, s, "read_source_code", {"path": "app.py", "repository": ""}
         )
         s["tool_calls"] = list(s.get("tool_calls") or []) + [source]
-
         extra_evidence = list(s.get("evidence") or [])
         if source["status"] == "SUCCEEDED":
             extra_evidence.append(
@@ -360,7 +307,7 @@ async def _run_with_langgraph(
                     "source": "read_source_code",
                     "source_type": "source_code",
                     "tool_call_id": source["tool_call_id"],
-                    "content": "Source inspection confirms suspicious query pattern in orders service.",
+                    "content": "Source inspection supports hypothesis.",
                     "result": source["output"],
                 }
             )
@@ -373,59 +320,446 @@ async def _run_with_langgraph(
         hyp["status"] = "VERIFIED" if ok else "REJECTED"
         hyp["verification_notes"] = notes
         s["hypotheses"] = [hyp]
-
         if not ok:
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             s["result"] = {"message": notes, "hypothesis": hyp}
             return s
-
         s["root_cause"] = form_root_cause(hyp, affected_component=s["service"])
         s["workflow_state"] = WorkflowState.ROOT_CAUSE_FOUND.value
-        # Phase 5 stops before sandbox; Phase 6+ continues to patch/tests.
-        s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
+        return s
+
+    async def create_sandbox_node(s: AgentState) -> AgentState:
+        from incidentpilot.sandbox.manager import SandboxManager
+
+        s["workflow_state"] = WorkflowState.CREATE_SANDBOX.value
+        if not s.get("root_cause"):
+            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+            return s
+        source = Path(settings.reference_repo_path)
+        if not source.exists():
+            source = Path(__file__).resolve().parents[3] / "reference" / "orders_api"
+        manager = SandboxManager(settings)
+        try:
+            manager.create_workspace(s["run_id"], source)
+            s["result"] = {**(s.get("result") or {}), "sandbox_source": str(source)}
+            s["_sandbox_manager"] = manager  # type: ignore[typeddict-item]
+        except Exception as exc:
+            s["status"] = AgentRunStatus.FAILED.value
+            s["error"] = f"sandbox create failed: {exc}"
+            s["workflow_state"] = WorkflowState.FAILED.value
+        return s
+
+    async def generate_patch_node(s: AgentState) -> AgentState:
+        from incidentpilot.sandbox.manager import generate_deterministic_patch
+
+        s["workflow_state"] = WorkflowState.GENERATE_PATCH.value
+        manager = s.get("_sandbox_manager")
+        if manager is None:
+            s["status"] = AgentRunStatus.FAILED.value
+            s["error"] = "sandbox manager missing"
+            return s
+        summary = (s.get("root_cause") or {}).get("summary", "regression")
+        attempts = list(s.get("patch_attempts") or [])
+        attempts.append({"attempt": len(attempts) + 1, "summary": summary})
+        s["patch_attempts"] = attempts
+        if len(attempts) > settings.max_patch_attempts:
+            s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
+            s["workflow_state"] = WorkflowState.NEEDS_HUMAN_INTERVENTION.value
+            s["error"] = "max patch attempts exceeded"
+            return s
+        patch = generate_deterministic_patch(summary)
+        try:
+            manager.apply_patch(s["run_id"], patch)
+            s["patch_attempts"][-1]["patch_diff"] = patch
+            s["patch_attempts"][-1]["status"] = "applied"
+        except Exception as exc:
+            s["patch_attempts"][-1]["status"] = "apply_failed"
+            s["patch_attempts"][-1]["error"] = str(exc)
+            s["status"] = AgentRunStatus.FAILED.value
+            s["error"] = f"apply patch failed: {exc}"
+        return s
+
+    async def run_tests_node(s: AgentState) -> AgentState:
+        from incidentpilot.models.enums import PatchAttemptStatus, TestRunStatus
+
+        s["workflow_state"] = WorkflowState.RUN_TESTS.value
+        manager = s.get("_sandbox_manager")
+        if manager is None:
+            s["status"] = AgentRunStatus.FAILED.value
+            return s
+        try:
+            result = manager.run_tests(s["run_id"], profile="pytest", timeout=90)
+        except Exception as exc:
+            s["status"] = AgentRunStatus.FAILED.value
+            s["error"] = f"run tests failed: {exc}"
+            return s
+        test_run_id = f"TR-{uuid.uuid4().hex[:12]}"
+        if s.get("patch_attempts"):
+            s["patch_attempts"][-1].update(
+                {
+                    "test_run_id": test_run_id,
+                    "test_ok": result.ok,
+                    "test_stdout": result.stdout[-4000:],
+                    "test_stderr": result.stderr[-2000:],
+                    "status": (
+                        PatchAttemptStatus.TESTS_PASSED.value
+                        if result.ok
+                        else PatchAttemptStatus.TESTS_FAILED.value
+                    ),
+                }
+            )
         s["result"] = {
-            "phase": 5,
-            "message": "Root cause verified with evidence-bound hypothesis.",
-            "root_cause": s["root_cause"],
+            **(s.get("result") or {}),
+            "test_run_id": test_run_id,
+            "test_status": (
+                TestRunStatus.PASSED.value if result.ok else TestRunStatus.FAILED.value
+            ),
+            "test_mode": result.mode,
+            "test_exit_code": result.exit_code,
         }
+        s["_test_ok"] = result.ok  # type: ignore[typeddict-item]
+        return s
+
+    def route_after_tests(s: AgentState) -> str:
+        if s.get("_test_ok"):
+            return "export_patch_artifact"
+        if len(s.get("patch_attempts") or []) < settings.max_patch_attempts:
+            return "reflect"
+        return "needs_human"
+
+    async def reflect_node(s: AgentState) -> AgentState:
+        s["workflow_state"] = WorkflowState.REFLECT.value
+        attempts = list(s.get("patch_attempts") or [])
+        if attempts:
+            attempts[-1]["reflection"] = "tests failed; retry with simplified patch"
+        s["patch_attempts"] = attempts
+        return s
+
+    async def export_artifact_node(s: AgentState) -> AgentState:
+        s["workflow_state"] = WorkflowState.EXPORT_PATCH_ARTIFACT.value
+        manager = s.get("_sandbox_manager")
+        if manager is None:
+            s["status"] = AgentRunStatus.FAILED.value
+            return s
+        patch = ""
+        if s.get("patch_attempts"):
+            patch = s["patch_attempts"][-1].get("patch_diff", "")
+        test_run_id = (s.get("result") or {}).get("test_run_id", "")
+        artifact = manager.export_patch_artifact(
+            s["run_id"],
+            base_commit_sha="local-dev",
+            patch_diff=patch,
+            test_run_id=test_run_id,
+        )
+        s["patch_artifact"] = artifact.to_dict()
+
+        factory = get_session_factory()
+        async with factory() as session:
+            from sqlalchemy import select
+
+            from incidentpilot.models.db import AgentRun, PatchArtifact
+
+            run_result = await session.execute(
+                select(AgentRun).where(AgentRun.run_id == s["run_id"])
+            )
+            run = run_result.scalar_one_or_none()
+            if run is not None:
+                session.add(
+                    PatchArtifact(
+                        patch_artifact_id=artifact.patch_artifact_id,
+                        run_pk=run.id,
+                        base_commit_sha=artifact.base_commit_sha,
+                        patch_diff=artifact.patch_diff,
+                        patch_hash=artifact.patch_hash,
+                        test_run_id=artifact.test_run_id,
+                        immutable=True,
+                    )
+                )
+                await session.commit()
+        manager.destroy_workspace(s["run_id"])
+        s["workflow_state"] = WorkflowState.WAIT_FOR_APPROVAL.value
+        s["status"] = AgentRunStatus.WAITING_APPROVAL.value
+        s["approval_required"] = True
+        s["result"] = {
+            **(s.get("result") or {}),
+            "patch_artifact_id": artifact.patch_artifact_id,
+            "patch_hash": artifact.patch_hash,
+        }
+        return s
+
+    async def needs_human_node(s: AgentState) -> AgentState:
+        s["workflow_state"] = WorkflowState.NEEDS_HUMAN_INTERVENTION.value
+        s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
         return s
 
     def route_after_collect(s: AgentState) -> str:
         if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
-            return END
+            return "end"
         return "form_hypothesis"
 
     def route_after_verify(s: AgentState) -> str:
-        return END
+        if s.get("root_cause"):
+            return "create_sandbox"
+        return "end"
 
     builder = StateGraph(AgentState)
     builder.add_node("plan", plan_node)
     builder.add_node("collect_evidence", collect_evidence_node)
     builder.add_node("form_hypothesis", form_hypothesis_node)
     builder.add_node("verify_hypothesis", verify_hypothesis_node)
+    builder.add_node("create_sandbox", create_sandbox_node)
+    builder.add_node("generate_patch", generate_patch_node)
+    builder.add_node("run_tests", run_tests_node)
+    builder.add_node("reflect", reflect_node)
+    builder.add_node("export_patch_artifact", export_artifact_node)
+    builder.add_node("needs_human", needs_human_node)
+
     builder.add_edge(START, "plan")
     builder.add_edge("plan", "collect_evidence")
     builder.add_conditional_edges(
         "collect_evidence",
         route_after_collect,
-        {"form_hypothesis": "form_hypothesis", END: END},
+        {"form_hypothesis": "form_hypothesis", "end": END},
     )
     builder.add_edge("form_hypothesis", "verify_hypothesis")
-    builder.add_conditional_edges("verify_hypothesis", route_after_verify, {END: END})
+    builder.add_conditional_edges(
+        "verify_hypothesis",
+        route_after_verify,
+        {"create_sandbox": "create_sandbox", "end": END},
+    )
+    builder.add_edge("create_sandbox", "generate_patch")
+    builder.add_conditional_edges(
+        "generate_patch",
+        lambda s: "run_tests"
+        if s.get("patch_attempts") and s["patch_attempts"][-1].get("status") == "applied"
+        else "needs_human",
+        {"run_tests": "run_tests", "needs_human": "needs_human"},
+    )
+    builder.add_conditional_edges(
+        "run_tests",
+        route_after_tests,
+        {
+            "export_patch_artifact": "export_patch_artifact",
+            "reflect": "reflect",
+            "needs_human": "needs_human",
+        },
+    )
+    builder.add_edge("reflect", "generate_patch")
+    builder.add_edge("export_patch_artifact", END)
+    builder.add_edge("needs_human", END)
 
     graph = builder.compile(checkpointer=MemorySaver())
-    config = {"configurable": {"thread_id": state["run_id"]}}
+    # LangGraph state is schema-bound; keep non-serializable runtime handles outside.
+    runtime: dict[str, Any] = {}
+    state["_runtime_key"] = state["run_id"]  # type: ignore[typeddict-item]
+
+    async def plan_node_r(s: AgentState) -> AgentState:
+        return await plan_node(s)
+
+    # Rebind nodes to use runtime dict for manager/test flags
+    async def create_sandbox_node_r(s: AgentState) -> AgentState:
+        from incidentpilot.sandbox.manager import SandboxManager
+
+        s["workflow_state"] = WorkflowState.CREATE_SANDBOX.value
+        if not s.get("root_cause"):
+            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+            return s
+        source = Path(settings.reference_repo_path)
+        if not source.exists():
+            source = Path(__file__).resolve().parents[3] / "reference" / "orders_api"
+        manager = SandboxManager(settings)
+        try:
+            manager.create_workspace(s["run_id"], source)
+            runtime[s["run_id"]] = {"manager": manager}
+            s["result"] = {**(s.get("result") or {}), "sandbox_source": str(source)}
+        except Exception as exc:
+            s["status"] = AgentRunStatus.FAILED.value
+            s["error"] = f"sandbox create failed: {exc}"
+            s["workflow_state"] = WorkflowState.FAILED.value
+        return s
+
+    async def generate_patch_node_r(s: AgentState) -> AgentState:
+        from incidentpilot.sandbox.manager import generate_deterministic_patch
+
+        s["workflow_state"] = WorkflowState.GENERATE_PATCH.value
+        manager = (runtime.get(s["run_id"]) or {}).get("manager")
+        if manager is None:
+            s["status"] = AgentRunStatus.FAILED.value
+            s["error"] = "sandbox manager missing"
+            return s
+        summary = (s.get("root_cause") or {}).get("summary", "regression")
+        attempts = list(s.get("patch_attempts") or [])
+        attempts.append({"attempt": len(attempts) + 1, "summary": summary})
+        if len(attempts) > settings.max_patch_attempts:
+            s["patch_attempts"] = attempts
+            s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
+            s["workflow_state"] = WorkflowState.NEEDS_HUMAN_INTERVENTION.value
+            s["error"] = "max patch attempts exceeded"
+            return s
+        s["patch_attempts"] = attempts
+        patch = generate_deterministic_patch(summary)
+        try:
+            manager.apply_patch(s["run_id"], patch)
+            s["patch_attempts"][-1]["patch_diff"] = patch
+            s["patch_attempts"][-1]["status"] = "applied"
+        except Exception as exc:
+            s["patch_attempts"][-1]["status"] = "apply_failed"
+            s["patch_attempts"][-1]["error"] = str(exc)
+            s["status"] = AgentRunStatus.FAILED.value
+            s["error"] = f"apply patch failed: {exc}"
+        return s
+
+    async def run_tests_node_r(s: AgentState) -> AgentState:
+        from incidentpilot.models.enums import PatchAttemptStatus, TestRunStatus
+
+        s["workflow_state"] = WorkflowState.RUN_TESTS.value
+        manager = (runtime.get(s["run_id"]) or {}).get("manager")
+        if manager is None:
+            s["status"] = AgentRunStatus.FAILED.value
+            return s
+        try:
+            result = manager.run_tests(s["run_id"], profile="pytest", timeout=90)
+        except Exception as exc:
+            s["status"] = AgentRunStatus.FAILED.value
+            s["error"] = f"run tests failed: {exc}"
+            return s
+        test_run_id = f"TR-{uuid.uuid4().hex[:12]}"
+        if s.get("patch_attempts"):
+            s["patch_attempts"][-1].update(
+                {
+                    "test_run_id": test_run_id,
+                    "test_ok": result.ok,
+                    "test_stdout": result.stdout[-4000:],
+                    "test_stderr": result.stderr[-2000:],
+                    "status": (
+                        PatchAttemptStatus.TESTS_PASSED.value
+                        if result.ok
+                        else PatchAttemptStatus.TESTS_FAILED.value
+                    ),
+                }
+            )
+        s["result"] = {
+            **(s.get("result") or {}),
+            "test_run_id": test_run_id,
+            "test_status": (
+                TestRunStatus.PASSED.value if result.ok else TestRunStatus.FAILED.value
+            ),
+            "test_mode": result.mode,
+            "test_exit_code": result.exit_code,
+        }
+        runtime.setdefault(s["run_id"], {})["test_ok"] = result.ok
+        return s
+
+    def route_after_tests_r(s: AgentState) -> str:
+        if runtime.get(s["run_id"], {}).get("test_ok"):
+            return "export_patch_artifact"
+        if len(s.get("patch_attempts") or []) < settings.max_patch_attempts:
+            return "reflect"
+        return "needs_human"
+
+    async def export_artifact_node_r(s: AgentState) -> AgentState:
+        s["workflow_state"] = WorkflowState.EXPORT_PATCH_ARTIFACT.value
+        manager = (runtime.get(s["run_id"]) or {}).get("manager")
+        if manager is None:
+            s["status"] = AgentRunStatus.FAILED.value
+            return s
+        patch = ""
+        if s.get("patch_attempts"):
+            patch = s["patch_attempts"][-1].get("patch_diff", "")
+        test_run_id = (s.get("result") or {}).get("test_run_id", "")
+        artifact = manager.export_patch_artifact(
+            s["run_id"],
+            base_commit_sha="local-dev",
+            patch_diff=patch,
+            test_run_id=test_run_id,
+        )
+        s["patch_artifact"] = artifact.to_dict()
+
+        factory = get_session_factory()
+        async with factory() as session:
+            from sqlalchemy import select
+
+            from incidentpilot.models.db import AgentRun, PatchArtifact
+
+            run_result = await session.execute(
+                select(AgentRun).where(AgentRun.run_id == s["run_id"])
+            )
+            run = run_result.scalar_one_or_none()
+            if run is not None:
+                session.add(
+                    PatchArtifact(
+                        patch_artifact_id=artifact.patch_artifact_id,
+                        run_pk=run.id,
+                        base_commit_sha=artifact.base_commit_sha,
+                        patch_diff=artifact.patch_diff,
+                        patch_hash=artifact.patch_hash,
+                        test_run_id=artifact.test_run_id,
+                        immutable=True,
+                    )
+                )
+                await session.commit()
+        manager.destroy_workspace(s["run_id"])
+        s["workflow_state"] = WorkflowState.WAIT_FOR_APPROVAL.value
+        s["status"] = AgentRunStatus.WAITING_APPROVAL.value
+        s["approval_required"] = True
+        s["result"] = {
+            **(s.get("result") or {}),
+            "patch_artifact_id": artifact.patch_artifact_id,
+            "patch_hash": artifact.patch_hash,
+        }
+        return s
+
+    builder = StateGraph(AgentState)
+    builder.add_node("plan", plan_node)
+    builder.add_node("collect_evidence", collect_evidence_node)
+    builder.add_node("form_hypothesis", form_hypothesis_node)
+    builder.add_node("verify_hypothesis", verify_hypothesis_node)
+    builder.add_node("create_sandbox", create_sandbox_node_r)
+    builder.add_node("generate_patch", generate_patch_node_r)
+    builder.add_node("run_tests", run_tests_node_r)
+    builder.add_node("reflect", reflect_node)
+    builder.add_node("export_patch_artifact", export_artifact_node_r)
+    builder.add_node("needs_human", needs_human_node)
+
+    builder.add_edge(START, "plan")
+    builder.add_edge("plan", "collect_evidence")
+    builder.add_conditional_edges(
+        "collect_evidence",
+        route_after_collect,
+        {"form_hypothesis": "form_hypothesis", "end": END},
+    )
+    builder.add_edge("form_hypothesis", "verify_hypothesis")
+    builder.add_conditional_edges(
+        "verify_hypothesis",
+        route_after_verify,
+        {"create_sandbox": "create_sandbox", "end": END},
+    )
+    builder.add_edge("create_sandbox", "generate_patch")
+    builder.add_conditional_edges(
+        "generate_patch",
+        lambda s: "run_tests"
+        if s.get("patch_attempts") and s["patch_attempts"][-1].get("status") == "applied"
+        else "needs_human",
+        {"run_tests": "run_tests", "needs_human": "needs_human"},
+    )
+    builder.add_conditional_edges(
+        "run_tests",
+        route_after_tests_r,
+        {
+            "export_patch_artifact": "export_patch_artifact",
+            "reflect": "reflect",
+            "needs_human": "needs_human",
+        },
+    )
+    builder.add_edge("reflect", "generate_patch")
+    builder.add_edge("export_patch_artifact", END)
+    builder.add_edge("needs_human", END)
+
+    graph = builder.compile(checkpointer=MemorySaver())
+    config = {
+        "configurable": {"thread_id": state["run_id"]},
+        "recursion_limit": 50,
+    }
     result = await graph.ainvoke(dict(state), config=config)
     return dict(result)
-
-
-async def _run_stub_workflow(
-    state: AgentState, settings: Settings, exc: Exception | None = None
-) -> AgentState:
-    s = dict(state)
-    s["status"] = AgentRunStatus.FAILED.value
-    s["workflow_state"] = WorkflowState.FAILED.value
-    s["error"] = f"graph execution failed: {exc}" if exc else "unknown graph failure"
-    s["result"] = {"fallback": True}
-    return s

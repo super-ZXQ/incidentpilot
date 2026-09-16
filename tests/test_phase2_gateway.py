@@ -103,7 +103,7 @@ async def test_agent_workflow_uses_tool_gateway(client) -> None:
     else:
         pytest.fail("run did not finish")
 
-    assert run["status"] == "NEEDS_HUMAN_INTERVENTION"
+    assert run["status"] in {"WAITING_APPROVAL", "NEEDS_HUMAN_INTERVENTION"}
     assert run["root_cause"]["evidence_ids"]
 
     tools = (await client.get(f"/v1/runs/{data['run_id']}/tool-calls")).json()
