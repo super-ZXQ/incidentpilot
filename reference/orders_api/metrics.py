@@ -42,3 +42,21 @@ def observe_db(operation: str, duration_s: float) -> None:
 
 def metrics_payload() -> tuple[bytes, str]:
     return generate_latest(), CONTENT_TYPE_LATEST
+
+
+def metrics_snapshot() -> dict[str, object]:
+    """Return a structured snapshot without exposing fault-injector state."""
+    samples: dict[str, list[dict[str, object]]] = {}
+    for metric in (REQUEST_COUNT, REQUEST_ERROR_COUNT, REQUEST_DURATION, DB_QUERY_DURATION):
+        for family in metric.collect():
+            for sample in family.samples:
+                samples.setdefault(sample.name, []).append(
+                    {"labels": dict(sample.labels), "value": sample.value}
+                )
+    return {"service": "orders-api", "metrics": samples}
+
+
+def reset_metrics() -> None:
+    """Start a fresh benchmark observation window."""
+    for metric in (REQUEST_COUNT, REQUEST_ERROR_COUNT, REQUEST_DURATION, DB_QUERY_DURATION):
+        metric.clear()

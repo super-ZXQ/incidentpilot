@@ -157,6 +157,47 @@ class OpenAICompatibleProvider(LLMProvider):
         system: str | None = None,
         temperature: float = 0.0,
     ) -> LLMResponse:
+        return await self._complete(
+            messages,
+            system=system,
+            temperature=temperature,
+        )
+
+    async def complete_structured(
+        self,
+        schema: type[BaseModel],
+        messages: list[LLMMessage],
+        *,
+        system: str | None = None,
+        temperature: float = 0.0,
+    ) -> BaseModel:
+        import json
+
+        schema_instruction = (
+            "Return only one JSON object matching this JSON Schema: "
+            + json.dumps(schema.model_json_schema(), separators=(",", ":"))
+        )
+        response = await self._complete(
+            messages,
+            system=f"{system or ''}\n{schema_instruction}".strip(),
+            temperature=temperature,
+            response_format={"type": "json_object"},
+            max_tokens=16384,
+        )
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
+        return schema.model_validate_json(content)
+
+    async def _complete(
+        self,
+        messages: list[LLMMessage],
+        *,
+        system: str | None,
+        temperature: float,
+        response_format: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
         import httpx
 
         payload_messages: list[dict[str, str]] = []
@@ -169,6 +210,10 @@ class OpenAICompatibleProvider(LLMProvider):
             "messages": payload_messages,
             "temperature": temperature,
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",

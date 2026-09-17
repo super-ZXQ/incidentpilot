@@ -137,6 +137,8 @@ class EvaluationHarness:
             self.settings = self.settings.model_copy(
                 update={"tool_backend": "fake", "llm_enabled": False, "llm_api_key": ""}
             )
+        elif tier == "real_llm_investigation":
+            self.settings = self.settings.model_copy(update={"investigation_only": True})
 
     def load_cases(self) -> list[FaultCase]:
         return load_fault_cases(self.fault_case_dir)
@@ -236,7 +238,7 @@ class EvaluationHarness:
         async with httpx.AsyncClient(timeout=10) as client:
             setup = await client.post(
                 f"{self.settings.reference_orders_api_url}/admin/fault",
-                json={"fault_type": case.fault_type, "params": case.params, "case_id": case.id},
+                json={"fault_type": case.fault_type, "params": case.params},
             )
             setup.raise_for_status()
             reproduced = await client.get(f"{self.settings.reference_orders_api_url}/orders")

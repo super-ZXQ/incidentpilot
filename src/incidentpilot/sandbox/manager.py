@@ -23,9 +23,16 @@ logger = logging.getLogger(__name__)
 
 # Server-side allowlisted test commands (not LLM-generated)
 ALLOWED_TEST_COMMANDS = {
-    "pytest": ["pytest", "-q", "--tb=short"],
+    "pytest": ["python", "-m", "pytest", "-q", "--tb=short"],
     # Regression profile: only healthy-path tests after a fix is applied
-    "pytest_regression": ["pytest", "-q", "--tb=short", "tests/test_regression.py"],
+    "pytest_regression": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "--tb=short",
+        "tests/test_regression.py",
+    ],
 }
 
 FORBIDDEN_PATCH_PARTS = {

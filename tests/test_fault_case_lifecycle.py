@@ -29,6 +29,6 @@ def test_fault_case_setup_reproduce_reset(case) -> None:
             assert reproduced.status_code in {200, 500}
             reset = client.post("/admin/fault/reset")
             assert reset.status_code == 200
-            assert client.get("/health").json()["fault_type"] == ""
+            assert client.get("/health").json() == {"status": "ok"}
     finally:
         sys.path.remove(str(REF))

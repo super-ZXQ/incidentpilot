@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from faults import apply_fault, get_fault, reset_fault
-from metrics import metrics_payload, observe_db, observe_request
+from metrics import metrics_payload, metrics_snapshot, observe_db, observe_request, reset_metrics
 from pydantic import BaseModel, Field
 from sqlalchemy import Integer, String, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -121,16 +121,13 @@ def create_app(database_url: str | None = None) -> FastAPI:
                         "method": request.method,
                         "status": status,
                         "latency_ms": round(duration * 1000, 3),
-                        "fault_type": get_fault().get("fault_type"),
-                        "case_id": get_fault().get("case_id"),
                     }
                 )
             )
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        fault = get_fault()
-        return {"status": "ok", "fault_type": fault.get("fault_type") or "", "case_id": fault.get("case_id") or ""}
+        return {"status": "ok"}
 
     @app.get("/metrics")
     def prometheus_metrics() -> Response:
@@ -139,13 +136,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/metrics/json")
     def metrics_json() -> dict[str, Any]:
-        fault = get_fault()
-        return {
-            "service": "orders-api",
-            "fault_type": fault.get("fault_type"),
-            "case_id": fault.get("case_id"),
-            "source": "prometheus_client_registry",
-        }
+        return {**metrics_snapshot(), "source": "prometheus_client_registry"}
 
     @app.post("/admin/fault")
     def set_fault(body: dict[str, Any]) -> dict[str, Any]:
@@ -153,6 +144,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
         if not fault_type:
             raise HTTPException(status_code=400, detail="fault_type required")
         try:
+            reset_metrics()
             return apply_fault(fault_type, body.get("params") or {}, body.get("case_id"))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -219,8 +211,6 @@ def create_app(database_url: str | None = None) -> FastAPI:
                 json.dumps(
                     {
                         "event": "orders_list_error",
-                        "fault_type": get_fault().get("fault_type"),
-                        "case_id": get_fault().get("case_id"),
                         "error_type": type(exc).__name__,
                         "request_id": str(uuid.uuid4()),
                     }

@@ -4,6 +4,28 @@ from __future__ import annotations
 
 from typing import Any
 
+CATEGORY_ALIASES = {
+    "database_performance": {
+        "n_plus_one_query",
+        "slow_database_query",
+        "missing_database_index",
+        "missing_index",
+    },
+    "application_bug": {"null_exception", "null_handling_regression"},
+    "dependency": {"dependency_timeout", "upstream_timeout"},
+    "data_contract": {"schema_mismatch", "schema_compatibility"},
+    "configuration": {"incorrect_timeout_configuration", "timeout_configuration"},
+    "code_regression": {"bad_query_refactor", "query_regression"},
+}
+
+
+def _category_matches(expected: str, observed: str) -> bool:
+    if not expected or not observed:
+        return False
+    if expected == observed or expected in observed:
+        return True
+    return observed in CATEGORY_ALIASES.get(expected, set())
+
 
 def score_structured_root_cause(ground_truth: dict[str, Any], agent_rc: dict[str, Any]) -> dict[str, bool]:
     gt_cat = str(
@@ -17,9 +39,7 @@ def score_structured_root_cause(ground_truth: dict[str, Any], agent_rc: dict[str
     agent_facts = [str(x).lower() for x in agent_rc.get("causal_facts") or []]
     agent_stmt = str(agent_rc.get("summary") or agent_rc.get("statement") or "").lower()
 
-    category_ok = bool(gt_cat) and (
-        gt_cat in agent_cat or gt_cat in agent_stmt or any(gt_cat in f for f in agent_facts)
-    )
+    category_ok = _category_matches(gt_cat, agent_cat)
     comp_tokens = {t for t in gt_comp.replace("/", " ").replace("-", " ").split() if len(t) > 3}
     comp_ok = bool(comp_tokens) and any(t in agent_comp or t in agent_stmt for t in comp_tokens)
 

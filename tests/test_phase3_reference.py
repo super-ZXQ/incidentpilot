@@ -61,7 +61,8 @@ def test_reference_orders_api_fault_injection() -> None:
         metrics_text = client.get("/metrics").text
         assert "orders_api_requests_total" in metrics_text
         meta = client.get("/metrics/json").json()
-        assert meta["fault_type"] == "n_plus_one_query"
+        assert "orders_api_request_duration_seconds_count" in meta["metrics"]
+        assert "fault_type" not in meta
         reset_fault()
     finally:
         sys.path.remove(str(REF_DIR))

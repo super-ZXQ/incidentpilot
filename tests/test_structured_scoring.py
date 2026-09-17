@@ -27,3 +27,21 @@ def test_structured_scoring_prefers_category_and_component() -> None:
     }
     assert score_structured_root_cause(gt, good)["structured_ok"] is True
     assert score_structured_root_cause(gt, bad)["structured_ok"] is False
+
+
+def test_structured_scoring_accepts_known_subtype_without_keyword_fallback() -> None:
+    gt = {
+        "fault_category": "database_performance",
+        "affected_component": "orders-api /orders handler",
+        "causal_facts": ["per-order item query"],
+    }
+    observed = {
+        "summary": "The listing handler performs one item query per order.",
+        "fault_category": "n_plus_one_query",
+        "affected_component": "orders-api /orders listing path",
+        "causal_facts": ["per-order item query"],
+        "evidence_ids": ["E1"],
+    }
+    scores = score_structured_root_cause(gt, observed)
+    assert scores["category_ok"] is True
+    assert scores["structured_ok"] is True

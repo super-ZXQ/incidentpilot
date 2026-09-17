@@ -86,13 +86,29 @@ def read_logs(service: str = "orders-api", window: str = "incident", limit: int 
             "error": "structured log source unavailable",
             "source": str(log_file),
         }
-    errors = [x for x in lines if x.get("error")]
+    incident_start = next(
+        (
+            index
+            for index in range(len(lines) - 1, -1, -1)
+            if lines[index].get("path") == "/admin/fault"
+            and lines[index].get("method") == "POST"
+        ),
+        max(0, len(lines) - limit),
+    )
+    selected = lines[incident_start:][-limit:]
+    errors = [
+        item
+        for item in selected
+        if item.get("error")
+        or item.get("error_type")
+        or int(item.get("status", 0) or 0) >= 500
+    ]
     return {
         "service": service,
         "window": window,
-        "count": len(lines),
+        "count": len(selected),
         "error_count": len(errors),
-        "events": lines[-limit:],
+        "events": selected,
     }
 
 

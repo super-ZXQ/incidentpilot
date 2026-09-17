@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from collections.abc import AsyncIterator
 
 import pytest
@@ -21,6 +23,13 @@ from incidentpilot.persistence.session import (
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+def pytest_asyncio_loop_factories(config, item):
+    del config, item
+    if sys.platform == "win32":
+        return {"selector": asyncio.SelectorEventLoop}
+    return {"default": asyncio.new_event_loop}
 
 
 @pytest_asyncio.fixture

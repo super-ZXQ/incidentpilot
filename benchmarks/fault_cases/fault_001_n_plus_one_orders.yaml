@@ -8,10 +8,10 @@ params:
   endpoint: /orders
 
 incident:
-  title: /orders API latency and error rate spike
+  title: /orders API latency spike
   service: orders-api
   severity: SEV2
-  symptom: P95 latency rose from ~400ms to ~2.8s; error rate rose from ~0.3% to ~7%
+  symptom: P95 latency rose from ~400ms to ~2.8s after a recent orders-listing change
   environment: reference-production
   repository: reference/orders_api
   start_time: "2026-09-16T10:00:00Z"

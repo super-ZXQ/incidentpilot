@@ -29,6 +29,18 @@ READONLY_TOOLS = (
     "query_database_readonly",
 )
 
+TOOL_ARGUMENT_GUIDE = """
+Tool argument contracts (use only these keys and types):
+- read_metrics: {"service": string, "window": string}
+- read_logs: {"service": string, "window": string}
+- inspect_git_history: {"repository": string, "limit": integer}
+- inspect_git_diff: {"repository": string, "commit_sha": string}
+- read_source_code: {"repository": string, "path": string}
+- query_database_readonly: {"query": string containing one read-only SELECT}
+Do not add environment, metrics, metric_names, time_range, or window_minutes fields.
+Do not guess nested source paths. For the reference/orders_api repository, inspect app.py first.
+""".strip()
+
 
 def _context(incident: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
     safe_evidence = [
@@ -116,7 +128,10 @@ class AgentDecisionModel:
             system=(
                 "Choose the single next action. Tool names are restricted to: "
                 + ", ".join(READONLY_TOOLS)
-                + ". Never invent evidence IDs."
+                + ". Never invent evidence IDs. Prefer a new evidence source over repeating a "
+                "successful source. After at least two useful independent observations, form a "
+                "falsifiable hypothesis.\n"
+                + TOOL_ARGUMENT_GUIDE
             ),
         )  # type: ignore[return-value]
 
@@ -171,7 +186,10 @@ class AgentDecisionModel:
             ],
             system=(
                 "Select one readonly tool that could confirm or reject the hypothesis. "
-                "Allowed tools: " + ", ".join(READONLY_TOOLS)
+                "Prefer a source independent from the evidence already cited. Allowed tools: "
+                + ", ".join(READONLY_TOOLS)
+                + ".\n"
+                + TOOL_ARGUMENT_GUIDE
             ),
         )
         if action.tool_selection is None:
@@ -235,7 +253,11 @@ class AgentDecisionModel:
                     ),
                 )
             ],
-            system="Conclude only from the verified hypothesis and cite supplied evidence IDs.",
+            system=(
+                "Conclude only from the verified hypothesis and cite supplied evidence IDs. "
+                "Use one fault_category from this stable taxonomy: database_performance, "
+                "application_bug, dependency, data_contract, configuration, code_regression."
+            ),
         )  # type: ignore[return-value]
 
     async def patch(

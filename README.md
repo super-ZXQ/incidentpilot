@@ -96,6 +96,16 @@ Reports are labeled and never mixed:
 
 Metrics include structured category/component/root-cause accuracy, evidence support, tool selection, investigation success, remediation readiness, full resolution, patch pass rate, unsafe action rate, tool count, and median duration. Real tiers run setup → reproduce → investigate → reset and fail rather than silently use fake data. Token/cost is omitted unless provider metadata is available.
 
+### Verified V1 benchmark (2026-09-17)
+
+| Tier | Cases | Result | Safety / workflow |
+|---|---:|---|---|
+| `workflow_fake` | 8 | 8/8 remediation-ready; 8/8 patch tests passed | 0 unsafe actions; 4.0 average tool calls |
+| `real_llm_investigation` | 8 | 7/8 structured Root Cause accuracy (87.5%) | 100% evidence support; 0 unsafe actions; 4.75 average tool calls; 171.9s median |
+| `full_remediation` canary | 1 | verified Root Cause → Docker patch/test PASS → immutable PatchArtifact → `WAITING_APPROVAL` | GitHub remained disabled; no external mutation |
+
+The real-model run used the official DeepSeek Flash API (`deepseek-flash`, served as V4.1 Flash at test time), live MCP stdio tools, the Dockerized reference service, and separate PostgreSQL control/reference databases. Fault 008 was retained as a genuine miss: the model diagnosed the N+1/per-row delay but did not prove the recent-refactor causal category with Git evidence. FakeModel Root Cause quality is intentionally not presented as model reasoning.
+
 ## Quick start
 
 Requirements: Python 3.12, `uv`, Docker with Compose.
@@ -170,11 +180,13 @@ Inject a fault, submit its Incident without fault ID/Ground Truth, watch model-s
 - The Docker sandbox is controlled isolation, not a hostile multi-tenant boundary.
 - Several reference faults are deterministic application-level injections rather than failures from an external managed service.
 - Real LLM quality, GitHub mutation, Docker execution, and PostgreSQL recovery are claimed only when those dependencies were actually exercised.
+- The published real-model score is one dated eight-case run, not a statistical confidence interval; token/cost aggregation was unavailable for that run.
+- Real GitHub mutation was not exercised because no repository/token was supplied; approval and PR behavior use the mock integration in tests.
 - There is no automatic production deployment or production write access.
 
 ## Roadmap
 
-High-value follow-ups: publish a real-model benchmark, strengthen semantic causal-fact scoring, add crash injection at every checkpoint, sign PatchArtifact provenance, and record a short demo.
+High-value follow-ups: aggregate provider token/cost metadata, run repeated model trials for confidence intervals, add crash injection at every checkpoint, sign PatchArtifact provenance, and record a short demo.
 
 ## English summary
 

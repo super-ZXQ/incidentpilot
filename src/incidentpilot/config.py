@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     max_tool_calls: int = Field(default=40)
     max_patch_attempts: int = Field(default=3)
     run_timeout_seconds: int = Field(default=900)
+    investigation_only: bool = Field(
+        default=False,
+        description="Evaluation-only stop after a verified root cause; API incidents cannot override it.",
+    )
 
     # Reference environment
     reference_orders_api_url: str = Field(default="http://127.0.0.1:8001")

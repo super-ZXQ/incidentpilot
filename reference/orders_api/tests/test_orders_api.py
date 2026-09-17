@@ -38,7 +38,12 @@ def test_fault_slow_query_increases_latency() -> None:
     assert resp.status_code == 200
     assert elapsed >= 0.15
     meta = client.get("/metrics/json").json()
-    assert meta["fault_type"] == "slow_database_query"
+    duration_samples = meta["metrics"]["orders_api_request_duration_seconds_sum"]
+    assert any(
+        sample["labels"].get("endpoint") == "/orders" and sample["value"] >= 0.15
+        for sample in duration_samples
+    )
+    assert "fault_type" not in meta
     reset_fault()
 
 

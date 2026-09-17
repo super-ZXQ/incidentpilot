@@ -219,6 +219,7 @@ async def run_agent_workflow(
             root_cause=final_state.get("root_cause"),
             finished=status
             in {
+                AgentRunStatus.INVESTIGATION_COMPLETE,
                 AgentRunStatus.RESOLVED,
                 AgentRunStatus.INSUFFICIENT_EVIDENCE,
                 AgentRunStatus.NEEDS_HUMAN_INTERVENTION,
@@ -321,7 +322,15 @@ async def _run_with_langgraph(
 
         while gateway.budget.can_step():
             gateway.budget.record_step()
-            action = await decision_model.next_action(incident_context(s), evidence)
+            decision_context = incident_context(s)
+            recent_failures = [
+                {"tool_name": call.get("tool_name"), "error": call.get("error")}
+                for call in tool_calls[-3:]
+                if call.get("status") != "SUCCEEDED"
+            ]
+            if recent_failures:
+                decision_context["recent_tool_errors"] = recent_failures
+            action = await decision_model.next_action(decision_context, evidence)
             if action.action == "form_hypothesis":
                 break
             if action.action in {"insufficient_evidence", "needs_human"}:
@@ -447,6 +456,12 @@ async def _run_with_langgraph(
         s["hypotheses"] = list(s["hypotheses"][:-1]) + [hyp]
         if not ok:
             s["result"] = {"message": notes, "hypothesis": hyp}
+            rejected_count = sum(
+                1 for item in s["hypotheses"] if item.get("status") == "REJECTED"
+            )
+            if rejected_count >= 3 or not gateway.budget.can_step():
+                s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+                s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             return s
         conclusion = await decision_model.conclude(
             incident_context(s),
@@ -469,6 +484,8 @@ async def _run_with_langgraph(
             "verified": True,
         }
         s["workflow_state"] = WorkflowState.ROOT_CAUSE_FOUND.value
+        if settings.investigation_only:
+            s["status"] = AgentRunStatus.INVESTIGATION_COMPLETE.value
         return s
 
     async def create_sandbox_node(s: AgentState) -> AgentState:
@@ -642,13 +659,14 @@ async def _run_with_langgraph(
 
     def route_after_verify(s: AgentState) -> str:
         if s.get("root_cause"):
+            if s.get("status") == AgentRunStatus.INVESTIGATION_COMPLETE.value:
+                return "end"
             return "create_sandbox"
+        if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
+            return "end"
         rejected = [h for h in (s.get("hypotheses") or []) if h.get("status") == "REJECTED"]
         if rejected and gateway.budget.can_step() and len(rejected) < 3:
             return "collect_evidence"
-        if rejected:
-            s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
-            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
         return "end"
 
     builder = StateGraph(AgentState)

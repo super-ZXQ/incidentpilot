@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from incidentpilot.agent.decision import AgentDecisionModel
+from incidentpilot.agent.decision import TOOL_ARGUMENT_GUIDE, AgentDecisionModel
 from incidentpilot.llm.provider import FakeLLMProvider
 from incidentpilot.sandbox.manager import SandboxManager
 from incidentpilot.tools.mcp_adapter import MCPReadonlyAdapter
@@ -30,6 +30,11 @@ async def test_decision_model_selects_next_tool_from_state() -> None:
     )
     assert after_rejection.tool_selection
     assert after_rejection.tool_selection.tool_name == "inspect_git_diff"
+
+
+def test_real_model_receives_exact_tool_argument_contracts() -> None:
+    assert 'read_metrics: {"service": string, "window": string}' in TOOL_ARGUMENT_GUIDE
+    assert "Do not add environment, metrics" in TOOL_ARGUMENT_GUIDE
 
 
 @pytest.mark.asyncio
