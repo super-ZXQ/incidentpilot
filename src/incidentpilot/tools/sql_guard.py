@@ -55,6 +55,20 @@ FORBIDDEN_KEYWORDS = (
     "notify",
 )
 
+FORBIDDEN_FUNCTIONS = {
+    "pg_sleep",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "dblink",
+    "dblink_exec",
+    "lo_import",
+    "lo_export",
+    "set_config",
+    "current_setting",
+}
+
 
 class SQLValidationError(ValueError):
     pass
@@ -95,12 +109,22 @@ def validate_readonly_sql(query: str) -> dict[str, Any]:
             raise SQLValidationError(f"forbidden statement node: {type(node).__name__}")
         if isinstance(node, exp.Anonymous):
             name = (node.name or "").lower()
-            if name in {"pg_sleep", "pg_read_file", "pg_ls_dir", "dblink", "lo_import", "lo_export"}:
+            if name in FORBIDDEN_FUNCTIONS:
                 raise SQLValidationError(f"forbidden function: {name}")
+
+    if tree.args.get("into") is not None:
+        raise SQLValidationError("SELECT INTO is forbidden")
+    if tree.args.get("locks") or tree.args.get("lock"):
+        raise SQLValidationError("locking SELECT is forbidden")
 
     if not isinstance(tree, ALLOWED_STATEMENT_TYPES):
         # allow WITH ... SELECT
-        if isinstance(tree, exp.With) and any(isinstance(s, ALLOWED_STATEMENT_TYPES) for s in tree.expressions) or isinstance(tree, exp.Subquery) and isinstance(tree.this, ALLOWED_STATEMENT_TYPES):
+        if (
+            isinstance(tree, exp.With)
+            and any(isinstance(s, ALLOWED_STATEMENT_TYPES) for s in tree.expressions)
+        ) or (
+            isinstance(tree, exp.Subquery) and isinstance(tree.this, ALLOWED_STATEMENT_TYPES)
+        ):
             pass
         else:
             raise SQLValidationError(f"statement type not allowed: {type(tree).__name__}")

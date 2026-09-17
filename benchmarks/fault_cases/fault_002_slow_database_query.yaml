@@ -21,7 +21,10 @@ ground_truth:
     /orders handler sleeps due to injected slow_database_query fault,
     increasing P95 latency.
   affected_component: orders-api /orders handler
-  expected_fault_category: database_performance
+  fault_category: database_performance
+  causal_facts:
+    - slow database path adds request delay
+    - orders endpoint P95 latency increases
   primary_evidence_sources:
     - metrics
     - logs

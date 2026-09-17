@@ -8,7 +8,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
+from incidentpilot.agent.decision import READONLY_TOOLS, AgentDecisionModel
 from incidentpilot.config import Settings
+from incidentpilot.llm.provider import build_llm_provider
 from incidentpilot.models.enums import AgentRunStatus, WorkflowState
 from incidentpilot.persistence import repo
 from incidentpilot.persistence.session import get_session_factory
@@ -17,6 +19,7 @@ from incidentpilot.tools.gateway import BudgetTracker, ToolGateway, ToolRegistry
 from incidentpilot.tools.mcp_adapter import register_mcp_readonly_tools
 
 logger = logging.getLogger(__name__)
+_TEST_CHECKPOINTER: Any = None
 
 
 class AgentState(TypedDict, total=False):
@@ -40,6 +43,7 @@ class AgentState(TypedDict, total=False):
     error: str | None
     result: dict[str, Any]
     limits: dict[str, Any]
+    trace_id: str
 
 
 def _utcnow() -> str:
@@ -48,10 +52,13 @@ def _utcnow() -> str:
 
 def build_tool_gateway(settings: Settings) -> tuple[ToolGateway, Any]:
     registry = ToolRegistry()
-    adapter = register_mcp_readonly_tools(registry)
-    # Keep fake tools registered as additional deterministic backend for tests
-    # that call names directly; MCP adapter already covers readonly names.
-    _ = register_fake_readonly_tools
+    if settings.tool_backend == "fake":
+        adapter = register_fake_readonly_tools(registry)
+    else:
+        from incidentpilot.tools.mcp_adapter import MCPReadonlyAdapter
+
+        adapter = MCPReadonlyAdapter(live=True)
+        register_mcp_readonly_tools(registry, adapter)
     budget = BudgetTracker(
         max_tool_calls=settings.max_tool_calls,
         max_steps=settings.max_investigation_steps,
@@ -65,12 +72,22 @@ async def run_agent_workflow(
     incident_pk: str,
     run_id: str,
     settings: Settings,
+    recover: bool = False,
 ) -> dict[str, Any]:
     factory = get_session_factory()
     async with factory() as session:
         from sqlalchemy import select
 
-        from incidentpilot.models.db import AgentRun, Evidence, Hypothesis, Incident, ToolCall
+        from incidentpilot.models.db import (
+            AgentRun,
+            Evidence,
+            Hypothesis,
+            Incident,
+            PatchAttempt,
+            TestRun,
+            ToolCall,
+        )
+        from incidentpilot.sandbox.manager import hash_patch
         from incidentpilot.services.incidents import RunService
 
         incident = await session.get(Incident, incident_pk)
@@ -110,9 +127,16 @@ async def run_agent_workflow(
                 "max_patch_attempts": settings.max_patch_attempts,
                 "run_timeout_seconds": settings.run_timeout_seconds,
             },
+            "trace_id": run.trace_id,
         }
 
-        final_state = await _execute_graph(state, settings, gateway)
+        if hasattr(_adapter, "connect"):
+            await _adapter.connect()
+        try:
+            final_state = await _execute_graph(state, settings, gateway, recover=recover)
+        finally:
+            if hasattr(_adapter, "disconnect"):
+                await _adapter.disconnect()
 
         status = AgentRunStatus(final_state.get("status", AgentRunStatus.FAILED.value))
 
@@ -140,6 +164,8 @@ async def run_agent_workflow(
                     source_type=item.get("source_type", "other"),
                     tool_call_id=item.get("tool_call_id"),
                     content=item.get("content", ""),
+                    summary=item.get("summary", ""),
+                    content_hash=item.get("hash", ""),
                     result=item.get("result") or {},
                 )
             )
@@ -155,6 +181,33 @@ async def run_agent_workflow(
                     verification_notes=item.get("verification_notes", ""),
                 )
             )
+        for item in final_state.get("patch_attempts") or []:
+            patch_diff = item.get("patch_diff", "")
+            session.add(
+                PatchAttempt(
+                    run_pk=run.id,
+                    attempt_number=int(item.get("attempt", 1)),
+                    patch_diff=patch_diff,
+                    patch_hash=hash_patch(patch_diff) if patch_diff else "",
+                    status=item.get("status", "CREATED"),
+                    notes=item.get("reflection", ""),
+                )
+            )
+            if item.get("test_run_id"):
+                session.add(
+                    TestRun(
+                        test_run_id=item["test_run_id"],
+                        run_pk=run.id,
+                        status="PASSED" if item.get("test_ok") else "FAILED",
+                        exit_code=(final_state.get("result") or {}).get("test_exit_code"),
+                        stdout=item.get("test_stdout", ""),
+                        stderr=item.get("test_stderr", ""),
+                        command="pytest_regression",
+                    )
+                )
+        run.plan = list(final_state.get("plan") or [])
+        run.tool_call_count = len(final_state.get("tool_calls") or [])
+        run.patch_attempt_count = len(final_state.get("patch_attempts") or [])
         await session.commit()
 
         await service.mark_status(
@@ -170,7 +223,6 @@ async def run_agent_workflow(
                 AgentRunStatus.INSUFFICIENT_EVIDENCE,
                 AgentRunStatus.NEEDS_HUMAN_INTERVENTION,
                 AgentRunStatus.FAILED,
-                AgentRunStatus.WAITING_APPROVAL,
             },
         )
         await repo.record_audit(
@@ -184,10 +236,14 @@ async def run_agent_workflow(
 
 
 async def _execute_graph(
-    state: AgentState, settings: Settings, gateway: ToolGateway
+    state: AgentState,
+    settings: Settings,
+    gateway: ToolGateway,
+    *,
+    recover: bool = False,
 ) -> AgentState:
     try:
-        return await _run_with_langgraph(state, settings, gateway)
+        return await _run_with_langgraph(state, settings, gateway, recover=recover)
     except Exception as exc:
         logger.exception("LangGraph execution failed")
         return {
@@ -205,27 +261,57 @@ async def _call_tool(
     name: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    result = await gateway.call(name, payload, run_id=state.get("run_id", ""), trace_id="")
+    result = await gateway.call(
+        name,
+        payload,
+        run_id=state.get("run_id", ""),
+        trace_id=state.get("trace_id", ""),
+    )
     return result.to_dict()
 
 
 async def _run_with_langgraph(
-    state: AgentState, settings: Settings, gateway: ToolGateway
+    state: AgentState,
+    settings: Settings,
+    gateway: ToolGateway,
+    *,
+    resume_value: str | None = None,
+    recover: bool = False,
 ) -> AgentState:
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.graph import END, START, StateGraph
 
+    provider = build_llm_provider(
+        llm_enabled=settings.llm_enabled,
+        provider_name=settings.llm_provider,
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+    )
+    decision_model = AgentDecisionModel(provider)
+
+    def incident_context(s: AgentState) -> dict[str, Any]:
+        return {
+            "incident_id": s["incident_id"],
+            "title": s["incident_title"],
+            "service": s["service"],
+            "symptom": s["symptom"],
+            "environment": s["environment"],
+            "repository": s["repository"],
+            "rejected_hypotheses": sum(
+                1 for h in (s.get("hypotheses") or []) if h.get("status") == "REJECTED"
+            ),
+        }
+
     async def plan_node(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.PLAN.value
-        s["plan"] = [
-            "Collect metrics evidence via read_metrics",
-            "Collect logs evidence via read_logs",
-            "Inspect git history and source code",
-            "Form hypothesis referencing evidence ids",
-            "Verify hypothesis with additional tool calls",
-            "Create sandbox, generate patch, run tests",
-            "Export PatchArtifact and wait for approval",
-        ]
+        plan = await decision_model.plan(incident_context(s))
+        s["plan"] = plan.steps
+        s["result"] = {
+            **(s.get("result") or {}),
+            "model": {"provider": provider.provider_name, "model": provider.model_name},
+            "plan_focus": plan.focus,
+        }
         return s
 
     async def collect_evidence_node(s: AgentState) -> AgentState:
@@ -233,28 +319,61 @@ async def _run_with_langgraph(
         tool_calls: list[dict[str, Any]] = list(s.get("tool_calls") or [])
         evidence: list[dict[str, Any]] = list(s.get("evidence") or [])
 
-        for tool_name, payload, source_type in (
-            ("read_metrics", {"service": s["service"], "window": "incident"}, "metrics"),
-            ("read_logs", {"service": s["service"], "window": "incident"}, "logs"),
-            (
-                "inspect_git_history",
-                {"repository": s.get("repository", ""), "limit": 5},
-                "git_history",
-            ),
-        ):
-            call = await _call_tool(gateway, s, tool_name, payload)
+        while gateway.budget.can_step():
+            gateway.budget.record_step()
+            action = await decision_model.next_action(incident_context(s), evidence)
+            if action.action == "form_hypothesis":
+                break
+            if action.action in {"insufficient_evidence", "needs_human"}:
+                s["workflow_state"] = (
+                    WorkflowState.INSUFFICIENT_EVIDENCE.value
+                    if action.action == "insufficient_evidence"
+                    else WorkflowState.NEEDS_HUMAN_INTERVENTION.value
+                )
+                s["status"] = (
+                    AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+                    if action.action == "insufficient_evidence"
+                    else AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
+                )
+                s["result"] = {**(s.get("result") or {}), "stop_reason": action.reason}
+                break
+            selection = action.tool_selection
+            if action.action != "collect_evidence" or selection is None:
+                s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+                s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+                break
+            if selection.tool_name not in READONLY_TOOLS:
+                call = await _call_tool(gateway, s, selection.tool_name, selection.arguments)
+                tool_calls.append(call)
+                s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
+                s["workflow_state"] = WorkflowState.NEEDS_HUMAN_INTERVENTION.value
+                s["result"] = {**(s.get("result") or {}), "stop_reason": "model selected an unregistered tool"}
+                break
+            call = await _call_tool(gateway, s, selection.tool_name, selection.arguments)
             tool_calls.append(call)
             if call["status"] == "SUCCEEDED":
+                import hashlib
+                import json
+
+                output_json = json.dumps(call["output"], sort_keys=True, default=str)
                 evidence.append(
                     {
                         "evidence_id": repo.new_id("EVID"),
-                        "source": tool_name,
-                        "source_type": source_type,
+                        "run_id": s["run_id"],
+                        "source": selection.tool_name,
+                        "source_type": selection.tool_name.removeprefix("read_").removeprefix("inspect_"),
                         "tool_call_id": call["tool_call_id"],
-                        "content": f"{tool_name} output for {s['service']}",
+                        "timestamp": _utcnow(),
+                        "content": output_json,
+                        "summary": selection.reason,
+                        "hash": hashlib.sha256(output_json.encode()).hexdigest(),
                         "result": call["output"],
                     }
                 )
+            if len(tool_calls) >= settings.max_tool_calls:
+                s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
+                s["workflow_state"] = WorkflowState.NEEDS_HUMAN_INTERVENTION.value
+                break
 
         s["tool_calls"] = tool_calls
         s["evidence"] = evidence
@@ -265,8 +384,6 @@ async def _run_with_langgraph(
         return s
 
     async def form_hypothesis_node(s: AgentState) -> AgentState:
-        from incidentpilot.agent.reasoning import build_hypothesis
-
         s["workflow_state"] = WorkflowState.FORM_HYPOTHESIS.value
         if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
             return s
@@ -276,21 +393,19 @@ async def _run_with_langgraph(
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             s["result"] = {"message": "insufficient evidence", "evidence_count": len(evidence)}
             return s
-        logs = next((e for e in evidence if e["source_type"] == "logs"), None)
-        statement = (
-            f"Service {s['service']} is degraded due to a recent regression: {s['symptom']}"
-        )
-        if logs:
-            statement = (
-                f"Recent regression in {s['service']} causes elevated latency/errors "
-                f"({s['symptom']})"
-            )
-        s["hypotheses"] = [build_hypothesis(statement, evidence, confidence="MEDIUM")]
+        proposal = await decision_model.propose_hypothesis(incident_context(s), evidence)
+        known = {e["evidence_id"] for e in evidence}
+        if not proposal.evidence_ids or not set(proposal.evidence_ids).issubset(known):
+            s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+            s["result"] = {"message": "model hypothesis cited unknown or no evidence"}
+            return s
+        s["hypotheses"] = list(s.get("hypotheses") or []) + [
+            {**proposal.model_dump(), "status": "OPEN", "verified": False}
+        ]
         return s
 
     async def verify_hypothesis_node(s: AgentState) -> AgentState:
-        from incidentpilot.agent.reasoning import form_root_cause, verify_hypothesis
-
         s["workflow_state"] = WorkflowState.VERIFY_HYPOTHESIS.value
         if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
             return s
@@ -299,42 +414,60 @@ async def _run_with_langgraph(
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             return s
 
-        source = await _call_tool(
-            gateway, s, "read_source_code", {"path": "app.py", "repository": ""}
+        from incidentpilot.llm.schemas import HypothesisProposal
+
+        proposal = HypothesisProposal.model_validate(s["hypotheses"][-1])
+        selection = await decision_model.verification_action(
+            incident_context(s), list(s.get("evidence") or []), proposal
         )
+        source = await _call_tool(gateway, s, selection.tool_name, selection.arguments)
         s["tool_calls"] = list(s.get("tool_calls") or []) + [source]
         extra_evidence = list(s.get("evidence") or [])
         if source["status"] == "SUCCEEDED":
             extra_evidence.append(
                 {
                     "evidence_id": repo.new_id("EVID"),
-                    "source": "read_source_code",
-                    "source_type": "source_code",
+                    "source": selection.tool_name,
+                    "source_type": "verification",
                     "tool_call_id": source["tool_call_id"],
-                    "content": "Source inspection supports hypothesis.",
+                    "content": str(source["output"]),
+                    "summary": selection.reason,
                     "result": source["output"],
                 }
             )
         s["evidence"] = extra_evidence
 
-        hyp = dict(s["hypotheses"][0])
+        decision = await decision_model.verify(proposal, extra_evidence)
+        hyp = dict(s["hypotheses"][-1])
         hyp["evidence_ids"] = [e["evidence_id"] for e in extra_evidence]
-        ok, notes = verify_hypothesis(hyp, extra_evidence, min_evidence=2)
+        ok, notes = decision.hypothesis_supported, decision.notes
         hyp["verified"] = ok
         hyp["status"] = "VERIFIED" if ok else "REJECTED"
         hyp["verification_notes"] = notes
-        s["hypotheses"] = [hyp]
+        s["hypotheses"] = list(s["hypotheses"][:-1]) + [hyp]
         if not ok:
-            s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
-            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             s["result"] = {"message": notes, "hypothesis": hyp}
             return s
-        s["root_cause"] = form_root_cause(
-            hyp,
-            affected_component=s["service"],
-            fault_category="code_regression",
-            causal_facts=["elevated latency/error", "recent change correlation"],
+        conclusion = await decision_model.conclude(
+            incident_context(s),
+            HypothesisProposal.model_validate(hyp),
+            extra_evidence,
         )
+        known = {e["evidence_id"] for e in extra_evidence}
+        if not conclusion.supporting_evidence_ids or not set(conclusion.supporting_evidence_ids).issubset(known):
+            s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+            return s
+        s["root_cause"] = {
+            "summary": conclusion.statement,
+            "statement": conclusion.statement,
+            "fault_category": conclusion.fault_category,
+            "affected_component": conclusion.affected_component,
+            "causal_facts": conclusion.causal_facts,
+            "evidence_ids": conclusion.supporting_evidence_ids,
+            "confidence": conclusion.confidence,
+            "verified": True,
+        }
         s["workflow_state"] = WorkflowState.ROOT_CAUSE_FOUND.value
         return s
 
@@ -510,6 +643,12 @@ async def _run_with_langgraph(
     def route_after_verify(s: AgentState) -> str:
         if s.get("root_cause"):
             return "create_sandbox"
+        rejected = [h for h in (s.get("hypotheses") or []) if h.get("status") == "REJECTED"]
+        if rejected and gateway.budget.can_step() and len(rejected) < 3:
+            return "collect_evidence"
+        if rejected:
+            s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
         return "end"
 
     builder = StateGraph(AgentState)
@@ -535,7 +674,11 @@ async def _run_with_langgraph(
     builder.add_conditional_edges(
         "verify_hypothesis",
         route_after_verify,
-        {"create_sandbox": "create_sandbox", "end": END},
+        {
+            "create_sandbox": "create_sandbox",
+            "collect_evidence": "collect_evidence",
+            "end": END,
+        },
     )
     builder.add_edge("create_sandbox", "generate_patch")
     builder.add_conditional_edges(
@@ -558,7 +701,6 @@ async def _run_with_langgraph(
     builder.add_edge("export_patch_artifact", END)
     builder.add_edge("needs_human", END)
 
-    graph = builder.compile(checkpointer=MemorySaver())
     # LangGraph state is schema-bound; keep non-serializable runtime handles outside.
     runtime: dict[str, Any] = {}
     state["_runtime_key"] = state["run_id"]  # type: ignore[typeddict-item]
@@ -607,11 +749,25 @@ async def _run_with_langgraph(
             s["error"] = "max patch attempts exceeded"
             return s
         s["patch_attempts"] = attempts
-        patch = generate_deterministic_patch(summary)
+        if decision_model.deterministic:
+            patch = generate_deterministic_patch(summary)
+            patch_generator = "deterministic-test-adapter"
+        else:
+            proposal = await decision_model.patch(
+                {
+                    "root_cause": s.get("root_cause"),
+                    "supporting_evidence": s.get("evidence"),
+                    "previous_attempts": attempts[:-1],
+                    "repository": s.get("repository"),
+                }
+            )
+            patch = proposal.unified_diff
+            patch_generator = f"{provider.provider_name}:{provider.model_name}"
         try:
             manager.apply_patch(s["run_id"], patch)
             s["patch_attempts"][-1]["patch_diff"] = patch
             s["patch_attempts"][-1]["status"] = "applied"
+            s["patch_attempts"][-1]["generator"] = patch_generator
         except Exception as exc:
             s["patch_attempts"][-1]["status"] = "apply_failed"
             s["patch_attempts"][-1]["error"] = str(exc)
@@ -679,7 +835,7 @@ async def _run_with_langgraph(
         test_run_id = (s.get("result") or {}).get("test_run_id", "")
         artifact = manager.export_patch_artifact(
             s["run_id"],
-            base_commit_sha="local-dev",
+            base_commit_sha=manager.base_commit_sha(s["run_id"]),
             patch_diff=patch,
             test_run_id=test_run_id,
         )
@@ -719,6 +875,33 @@ async def _run_with_langgraph(
         }
         return s
 
+    async def wait_for_approval_node(s: AgentState) -> AgentState:
+        from langgraph.types import interrupt
+
+        decision = interrupt(
+            {
+                "run_id": s["run_id"],
+                "patch_artifact": s.get("patch_artifact"),
+                "root_cause": s.get("root_cause"),
+            }
+        )
+        from incidentpilot.agent.approval_resume import resume_after_approval
+        from incidentpilot.models.enums import ApprovalDecision
+
+        outcome = await resume_after_approval(
+            run_id=s["run_id"],
+            decision=ApprovalDecision(str(decision)),
+            settings=settings,
+        )
+        s["result"] = {**(s.get("result") or {}), **outcome}
+        s["status"] = outcome["status"]
+        s["workflow_state"] = (
+            WorkflowState.RESOLVED.value
+            if outcome["status"] == AgentRunStatus.RESOLVED.value
+            else WorkflowState.NEEDS_HUMAN_INTERVENTION.value
+        )
+        return s
+
     builder = StateGraph(AgentState)
     builder.add_node("plan", plan_node)
     builder.add_node("collect_evidence", collect_evidence_node)
@@ -729,6 +912,7 @@ async def _run_with_langgraph(
     builder.add_node("run_tests", run_tests_node_r)
     builder.add_node("reflect", reflect_node)
     builder.add_node("export_patch_artifact", export_artifact_node_r)
+    builder.add_node("wait_for_approval", wait_for_approval_node)
     builder.add_node("needs_human", needs_human_node)
 
     builder.add_edge(START, "plan")
@@ -742,7 +926,11 @@ async def _run_with_langgraph(
     builder.add_conditional_edges(
         "verify_hypothesis",
         route_after_verify,
-        {"create_sandbox": "create_sandbox", "end": END},
+        {
+            "create_sandbox": "create_sandbox",
+            "collect_evidence": "collect_evidence",
+            "end": END,
+        },
     )
     builder.add_edge("create_sandbox", "generate_patch")
     builder.add_conditional_edges(
@@ -762,13 +950,72 @@ async def _run_with_langgraph(
         },
     )
     builder.add_edge("reflect", "generate_patch")
-    builder.add_edge("export_patch_artifact", END)
+    builder.add_edge("export_patch_artifact", "wait_for_approval")
+    builder.add_edge("wait_for_approval", END)
     builder.add_edge("needs_human", END)
 
-    graph = builder.compile(checkpointer=MemorySaver())
     config = {
         "configurable": {"thread_id": state["run_id"]},
         "recursion_limit": 50,
     }
-    result = await graph.ainvoke(dict(state), config=config)
+    invoke_input: Any = dict(state)
+    if recover:
+        invoke_input = None
+    if resume_value is not None:
+        from langgraph.types import Command
+
+        invoke_input = Command(resume=resume_value)
+    if settings.database_url.startswith("postgresql"):
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+        checkpoint_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://")
+        async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
+            await checkpointer.setup()
+            graph = builder.compile(checkpointer=checkpointer)
+            result = await graph.ainvoke(invoke_input, config=config)
+    else:
+        # Explicit test-only path; formal runtime uses PostgreSQL checkpoints.
+        global _TEST_CHECKPOINTER
+        if _TEST_CHECKPOINTER is None:
+            _TEST_CHECKPOINTER = MemorySaver()
+        graph = builder.compile(checkpointer=_TEST_CHECKPOINTER)
+        result = await graph.ainvoke(invoke_input, config=config)
     return dict(result)
+
+
+async def resume_agent_workflow(
+    *, run_id: str, decision: str, settings: Settings
+) -> dict[str, Any]:
+    """Resume the persisted LangGraph interrupt after an approval decision."""
+    factory = get_session_factory()
+    async with factory() as session:
+        from sqlalchemy import select
+
+        from incidentpilot.models.db import AgentRun, Incident
+
+        result = await session.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        run = result.scalar_one_or_none()
+        if run is None:
+            raise ValueError(f"run not found: {run_id}")
+        incident = await session.get(Incident, run.incident_pk)
+        if incident is None:
+            raise ValueError(f"incident missing for run: {run_id}")
+        state: AgentState = {
+            "run_id": run.run_id,
+            "incident_id": incident.incident_id,
+            "incident_title": incident.title,
+            "service": incident.service,
+            "symptom": incident.symptom,
+            "environment": incident.environment,
+            "repository": incident.repository,
+        }
+    gateway, adapter = build_tool_gateway(settings)
+    if hasattr(adapter, "connect"):
+        await adapter.connect()
+    try:
+        return await _run_with_langgraph(
+            state, settings, gateway, resume_value=decision
+        )
+    finally:
+        if hasattr(adapter, "disconnect"):
+            await adapter.disconnect()

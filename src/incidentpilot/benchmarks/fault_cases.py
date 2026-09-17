@@ -23,6 +23,16 @@ REGISTERED_FAULT_TYPES = {
 }
 
 
+class FaultGroundTruth(BaseModel):
+    fault_category: str
+    affected_component: str
+    root_cause: str
+    causal_facts: list[str] = Field(min_length=1)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
 class FaultCase(BaseModel):
     id: str
     title: str
@@ -30,7 +40,7 @@ class FaultCase(BaseModel):
     fault_type: str
     params: dict[str, Any] = Field(default_factory=dict)
     incident: dict[str, Any] = Field(default_factory=dict)
-    ground_truth: dict[str, Any] = Field(default_factory=dict)
+    ground_truth: FaultGroundTruth
     expected_evidence_sources: list[str] = Field(default_factory=list)
     expected_fix_behavior: dict[str, Any] = Field(default_factory=dict)
 
@@ -41,6 +51,9 @@ class FaultCase(BaseModel):
 
 def load_fault_case(path: str | Path) -> FaultCase:
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    fault_type = data.get("fault_type") if isinstance(data, dict) else None
+    if fault_type not in REGISTERED_FAULT_TYPES:
+        raise ValueError(f"fault_type '{fault_type}' is not registered")
     case = FaultCase.model_validate(data)
     case.validate_registered()
     return case

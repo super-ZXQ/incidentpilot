@@ -97,6 +97,8 @@ class Evidence(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    content_hash: Mapped[str] = mapped_column(String(64), default="")
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -201,6 +203,8 @@ class Approval(Base):
 
     def is_approved(self) -> bool:
         return self.decision == ApprovalDecision.APPROVE.value
+
+    __table_args__ = (Index("ux_approvals_run_pk", "run_pk", unique=True),)
 
 
 class AuditEvent(Base):

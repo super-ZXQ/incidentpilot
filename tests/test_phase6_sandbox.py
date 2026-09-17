@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -62,9 +63,14 @@ def test_apply_patch_and_run_pytest() -> None:
 def test_docker_sandbox_network_disabled() -> None:
     if not docker_available():
         pytest.skip("Docker unavailable on this host")
+    if subprocess.run(
+        ["docker", "image", "inspect", "incidentpilot-sandbox:py312"],
+        capture_output=True,
+    ).returncode != 0:
+        pytest.skip("sandbox image not built")
     settings = Settings(
         sandbox_enabled=True,
-        sandbox_image="python:3.12-slim",
+        sandbox_image="incidentpilot-sandbox:py312",
         sandbox_network="none",
         reference_repo_path=str(REF),
     )
@@ -73,11 +79,8 @@ def test_docker_sandbox_network_disabled() -> None:
     repo = mgr._workspaces["run-docker"] / "repo"
     (repo / "test_smoke.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
     result = mgr.run_tests("run-docker", profile="pytest", timeout=180)
-    # python:3.12-slim may lack pytest; accept either pass or clear docker error mode
-    assert result.mode in {"docker", "local"}
-    if result.mode == "docker" and result.exit_code not in (0, 1, 2):
-        # missing pytest in slim image is acceptable for this isolation check
-        assert "pytest" in (result.stdout + result.stderr).lower() or result.exit_code != 0
+    assert result.mode == "docker"
+    assert result.ok is True
     mgr.destroy_workspace("run-docker")
 
 

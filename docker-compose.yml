@@ -1,4 +1,11 @@
 services:
+  sandbox-image:
+    image: incidentpilot-sandbox:py312
+    build:
+      context: .
+      dockerfile: docker/sandbox.Dockerfile
+    command: ["python", "--version"]
+
   incidentpilot-postgres:
     image: postgres:16-alpine
     environment:
@@ -30,6 +37,20 @@ services:
       retries: 20
     volumes:
       - ip_pg_ref:/var/lib/postgresql/data
+      - ./infra/reference-db-init.sql:/docker-entrypoint-initdb.d/10-readonly.sql:ro
+
+  reference-orders-api:
+    build: ./reference/orders_api
+    environment:
+      REFERENCE_DATABASE_URL: postgresql+psycopg://reference:reference@reference-postgres:5432/orders
+      REFERENCE_LOG_FILE: /app/var/logs/orders.jsonl
+    ports:
+      - "8001:8001"
+    depends_on:
+      reference-postgres:
+        condition: service_healthy
+    volumes:
+      - ./reference/orders_api/var/logs:/app/var/logs
 
   prometheus:
     image: prom/prometheus:v2.55.0

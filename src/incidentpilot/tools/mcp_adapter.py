@@ -35,10 +35,22 @@ class MCPReadonlyAdapter:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
+        allowed_env = {
+            "PATH",
+            "PYTHONPATH",
+            "SYSTEMROOT",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "REFERENCE_REPO_PATH",
+            "REFERENCE_LOGS_PATH",
+            "REFERENCE_ORDERS_API_URL",
+            "REFERENCE_DB_URL",
+        }
         params = StdioServerParameters(
             command=sys.executable,
             args=[str(SERVER_PATH)],
-            env={**os.environ},
+            env={key: value for key, value in os.environ.items() if key.upper() in allowed_env},
         )
         # Store context managers for later use
         self._stdio_cm = stdio_client(params)
@@ -68,11 +80,16 @@ class MCPReadonlyAdapter:
                 try:
                     import json
 
-                    return json.loads(texts[0])
+                    payload = json.loads(texts[0])
+                    if isinstance(payload, dict) and payload.get("error"):
+                        raise RuntimeError(str(payload["error"]))
+                    return payload
                 except json.JSONDecodeError:
                     return {"text": "\n".join(texts)}
             return {"content_blocks": len(result.content)}
-        # Offline contract-compatible fallback used in CI
+        if self.live:
+            raise RuntimeError("MCP live adapter is not connected; fake fallback is disabled")
+        # Explicit deterministic fake backend used only by unit tests.
         return await _offline_tool(name, arguments)
 
 
@@ -112,6 +129,7 @@ def register_mcp_readonly_tools(registry: ToolRegistry, adapter: MCPReadonlyAdap
                 "type": "object",
                 "properties": {"service": {"type": "string"}, "window": {"type": "string"}},
                 "required": ["service"],
+                "additionalProperties": False,
             },
         ),
         ToolSpec(
@@ -125,6 +143,7 @@ def register_mcp_readonly_tools(registry: ToolRegistry, adapter: MCPReadonlyAdap
                 "type": "object",
                 "properties": {"service": {"type": "string"}, "window": {"type": "string"}},
                 "required": ["service"],
+                "additionalProperties": False,
             },
         ),
         ToolSpec(
@@ -134,7 +153,11 @@ def register_mcp_readonly_tools(registry: ToolRegistry, adapter: MCPReadonlyAdap
             handler=lambda repository="", limit=10: _call(
                 "inspect_git_history", repository=repository, limit=limit
             ),
-            input_schema={"type": "object", "properties": {}},
+            input_schema={
+                "type": "object",
+                "properties": {"repository": {"type": "string"}, "limit": {"type": "integer"}},
+                "additionalProperties": False,
+            },
         ),
         ToolSpec(
             name="inspect_git_diff",
@@ -143,7 +166,11 @@ def register_mcp_readonly_tools(registry: ToolRegistry, adapter: MCPReadonlyAdap
             handler=lambda repository="", commit_sha="HEAD": _call(
                 "inspect_git_diff", repository=repository, commit_sha=commit_sha
             ),
-            input_schema={"type": "object", "properties": {}},
+            input_schema={
+                "type": "object",
+                "properties": {"repository": {"type": "string"}, "commit_sha": {"type": "string"}},
+                "additionalProperties": False,
+            },
         ),
         ToolSpec(
             name="read_source_code",
@@ -154,8 +181,9 @@ def register_mcp_readonly_tools(registry: ToolRegistry, adapter: MCPReadonlyAdap
             ),
             input_schema={
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {"path": {"type": "string"}, "repository": {"type": "string"}},
                 "required": ["path"],
+                "additionalProperties": False,
             },
         ),
         ToolSpec(
@@ -167,6 +195,7 @@ def register_mcp_readonly_tools(registry: ToolRegistry, adapter: MCPReadonlyAdap
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
                 "required": ["query"],
+                "additionalProperties": False,
             },
         ),
     ]

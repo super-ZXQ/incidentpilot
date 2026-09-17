@@ -19,7 +19,10 @@ ground_truth:
   root_cause: |
     /orders listing raises RuntimeError from injected null_exception fault path.
   affected_component: orders-api /orders handler
-  expected_fault_category: application_bug
+  fault_category: application_bug
+  causal_facts:
+    - RuntimeError is raised during orders listing
+    - the endpoint returns HTTP 500
   primary_evidence_sources:
     - logs
     - source_code

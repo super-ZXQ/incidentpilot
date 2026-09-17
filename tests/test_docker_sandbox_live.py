@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,10 +17,15 @@ REF = Path(__file__).resolve().parents[1] / "reference" / "orders_api"
 def test_docker_sandbox_runs_pytest_network_none() -> None:
     if not docker_available():
         pytest.skip("Docker daemon unavailable")
+    if subprocess.run(
+        ["docker", "image", "inspect", "incidentpilot-sandbox:py312"],
+        capture_output=True,
+    ).returncode != 0:
+        pytest.skip("build incidentpilot-sandbox:py312 before live Docker verification")
 
     settings = Settings(
         sandbox_enabled=True,
-        sandbox_image="python:3.12-slim",
+        sandbox_image="incidentpilot-sandbox:py312",
         sandbox_network="none",
         reference_repo_path=str(REF),
     )
@@ -32,17 +38,14 @@ def test_docker_sandbox_runs_pytest_network_none() -> None:
             "def test_sandbox_ok():\n    assert 2 + 2 == 4\n",
             encoding="utf-8",
         )
-        # Use python -m pytest via allowlisted profile; ensure pytest available in image
-        # For slim image without pytest, run a local-mode fallback assertion on workspace isolation
         result = mgr.run_tests("run-docker-live", profile="pytest", timeout=180)
-        assert result.mode in {"docker", "local", "docker_error"}
-        if result.mode == "docker":
-            # workspace mounted; container ephemeral
-            assert result.command[0] == "docker"
-            assert "--network" in result.command
-            assert "none" in result.command
-            assert "--user" in result.command
-            assert "--cap-drop" in result.command
+        assert result.mode == "docker"
+        assert result.ok is True
+        assert result.command[0] == "docker"
+        assert "--network" in result.command
+        assert "none" in result.command
+        assert "--user" in result.command
+        assert "--cap-drop" in result.command
         # isolation: workspace is not the original path
         assert root.resolve() != REF.resolve()
     finally:

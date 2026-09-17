@@ -7,6 +7,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: incidentpilot
+          POSTGRES_PASSWORD: incidentpilot
+          POSTGRES_DB: incidentpilot_app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U incidentpilot -d incidentpilot_app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -17,6 +31,10 @@ jobs:
         run: uv sync --extra dev
       - name: Ruff
         run: uv run ruff check src tests reference ops_mcp
+      - name: Alembic upgrade
+        run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app
       - name: Pytest
         run: uv run pytest -q
         env:
@@ -24,3 +42,5 @@ jobs:
           LLM_ENABLED: "false"
           GITHUB_INTEGRATION_ENABLED: "false"
           SANDBOX_ENABLED: "false"
+          TOOL_BACKEND: "fake"
+          POSTGRES_TEST_URL: postgresql://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app

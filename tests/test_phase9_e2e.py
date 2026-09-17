@@ -24,6 +24,7 @@ async def test_e2e_full_loop_investigate_fix_approve_pr(tmp_path) -> None:
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_path / 'e2e.db'}"
     os.environ["OTEL_CONSOLE_EXPORTER"] = "false"
     os.environ["GITHUB_INTEGRATION_ENABLED"] = "false"
+    os.environ["TOOL_BACKEND"] = "fake"
     reset_settings_cache()
     await init_db()
 

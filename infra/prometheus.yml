@@ -4,6 +4,6 @@ global:
 scrape_configs:
   - job_name: orders-api
     static_configs:
-      - targets: ["host.docker.internal:8001"]
+      - targets: ["reference-orders-api:8001"]
         labels:
           service: orders-api

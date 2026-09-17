@@ -78,6 +78,8 @@ class EvidenceOut(BaseModel):
     timestamp: datetime
     tool_call_id: str | None = None
     content: str
+    summary: str = ""
+    content_hash: str = ""
     result: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"from_attributes": True}

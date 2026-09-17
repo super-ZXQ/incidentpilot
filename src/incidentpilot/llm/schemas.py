@@ -40,10 +40,8 @@ class RootCauseConclusion(BaseModel):
 
 
 class PatchProposal(BaseModel):
-    patch_type: Literal["simple_replace", "unified_diff"] = "simple_replace"
-    path: str = ""
-    find: str = ""
-    replace: str = ""
+    patch_type: Literal["unified_diff"] = "unified_diff"
+    unified_diff: str
     notes: str = ""
 
 

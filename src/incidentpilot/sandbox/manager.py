@@ -28,6 +28,70 @@ ALLOWED_TEST_COMMANDS = {
     "pytest_regression": ["pytest", "-q", "--tb=short", "tests/test_regression.py"],
 }
 
+FORBIDDEN_PATCH_PARTS = {
+    ".git",
+    ".env",
+    "credentials",
+    "credential",
+    "secrets",
+    "secret",
+    "docker.sock",
+}
+# The Docker socket cannot access Docker socket from the sandbox because it is
+# never mounted; the name is also denied as a patch target.
+
+
+def validate_patch_path(repo: Path, raw_path: str) -> Path:
+    """Resolve a patch target and reject escape or sensitive paths."""
+    normalized = raw_path.replace("\\", "/").removeprefix("a/").removeprefix("b/")
+    candidate = Path(normalized)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(f"unsafe patch path: {raw_path}")
+    lowered = {part.lower() for part in candidate.parts}
+    sensitive = any(
+        part in FORBIDDEN_PATCH_PARTS
+        or part.startswith(".env.")
+        or "credential" in part
+        or "secret" in part
+        for part in lowered
+    )
+    if sensitive:
+        raise ValueError(f"forbidden patch path: {raw_path}")
+    resolved = (repo / candidate).resolve()
+    if not resolved.is_relative_to(repo.resolve()):
+        raise ValueError(f"patch path outside repository: {raw_path}")
+    return resolved
+
+
+def validate_patch_diff(repo: Path, patch_diff: str) -> None:
+    """Validate every path before any patch process is started."""
+    import json
+
+    try:
+        data = json.loads(patch_diff)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict) and data.get("type") == "simple_replace":
+        edits = data.get("edits")
+        if not isinstance(edits, list) or not edits:
+            raise ValueError("patch must contain at least one edit")
+        for item in edits:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                raise ValueError("patch edit path is required")
+            validate_patch_path(repo, item["path"])
+        return
+
+    paths: list[str] = []
+    for line in patch_diff.splitlines():
+        if line.startswith(("--- ", "+++ ")):
+            value = line[4:].split("\t", 1)[0]
+            if value != "/dev/null":
+                paths.append(value)
+    if not paths:
+        raise ValueError("unrecognized or empty patch format")
+    for path in paths:
+        validate_patch_path(repo, path)
+
 
 @dataclass
 class SandboxResult:
@@ -70,13 +134,13 @@ def docker_available() -> bool:
     if shutil.which("docker") is None:
         return False
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["docker", "info"],
             capture_output=True,
             timeout=10,
             check=False,
         )
-        return True
+        return result.returncode == 0
     except Exception:
         return False
 
@@ -87,6 +151,7 @@ class SandboxManager:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._workspaces: dict[str, Path] = {}
+        self._base_commits: dict[str, str] = {}
 
     def create_workspace(self, run_id: str, source_path: str | Path) -> Path:
         source = Path(source_path).resolve()
@@ -100,10 +165,24 @@ class SandboxManager:
             dest.mkdir(parents=True)
             shutil.copy2(source, dest / source.name)
         self._workspaces[run_id] = root
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=source if source.is_dir() else source.parent,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self._base_commits[run_id] = (
+            commit.stdout.strip() if commit.returncode == 0 else "UNVERSIONED"
+        )
         return dest
+
+    def base_commit_sha(self, run_id: str) -> str:
+        return self._base_commits.get(run_id, "UNVERSIONED")
 
     def destroy_workspace(self, run_id: str) -> None:
         root = self._workspaces.pop(run_id, None)
+        self._base_commits.pop(run_id, None)
         if root is not None and root.exists():
             shutil.rmtree(root, ignore_errors=True)
 
@@ -112,13 +191,23 @@ class SandboxManager:
         if root is None:
             raise RuntimeError("workspace not created")
         repo = root / "repo"
+        validate_patch_diff(repo, patch_diff)
         # Prefer git apply if possible; otherwise write a unified-diff-ish file and
         # apply simple replacements for test fixtures.
         patch_path = root / "patch.diff"
         patch_path.write_text(patch_diff, encoding="utf-8")
         try:
             subprocess.run(
-                ["git", "apply", "--unsafe-paths", "--directory", str(repo), str(patch_path)],
+                ["git", "apply", "--check", str(patch_path)],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "apply", str(patch_path)],
+                cwd=repo,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -144,7 +233,7 @@ class SandboxManager:
             data = json.loads(patch_diff)
             if isinstance(data, dict) and data.get("type") == "simple_replace":
                 for item in data.get("edits", []):
-                    target = repo / item["path"]
+                    target = validate_patch_path(repo, item["path"])
                     if not target.exists():
                         raise ValueError(f"target missing: {item['path']}")
                     text = target.read_text(encoding="utf-8")
@@ -169,7 +258,7 @@ class SandboxManager:
                 continue
             old = body.split(old_marker, 1)[1].split(new_marker, 1)[0]
             new = body.split(new_marker, 1)[1]
-            target = repo / rel
+            target = validate_patch_path(repo, rel)
             text = target.read_text(encoding="utf-8")
             if old not in text:
                 if new in text:
@@ -187,16 +276,19 @@ class SandboxManager:
             raise RuntimeError("workspace not created")
         repo = root / "repo"
 
-        use_docker = self.settings.sandbox_enabled and docker_available()
+        use_docker = self.settings.sandbox_enabled
         started = time.perf_counter()
         if use_docker:
+            if not docker_available():
+                raise RuntimeError("Docker sandbox requested but Docker daemon is unavailable")
             return self._run_in_docker(run_id, repo, cmd, timeout, started)
         return self._run_local(run_id, repo, cmd, timeout, started)
 
     def _run_local(
         self, run_id: str, repo: Path, cmd: list[str], timeout: int, started: float
     ) -> SandboxResult:
-        env = os.environ.copy()
+        allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PYTHONHOME"}
+        env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
         env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
         proc = subprocess.run(
             cmd,
@@ -299,7 +391,7 @@ class SandboxManager:
 
 
 def generate_deterministic_patch(root_cause_summary: str, repo_name: str = "orders-api") -> str:
-    """Agent-side patch generator used until LLM-driven patching is enabled.
+    """Test-only deterministic patch generator for CI fixtures.
 
     Produces a simple_replace patch that removes pathological per-row delay
     from the reference orders_api app.py listing path.

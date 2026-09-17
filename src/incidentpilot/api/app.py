@@ -36,6 +36,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     await init_db()
+    if settings.database_url.startswith("postgresql"):
+        await get_run_executor().recover_non_terminal()
     yield
 
 
@@ -181,10 +183,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if incident is not None:
             await approval_service.update_incident_for_decision(incident, body.decision)
 
-        # Resume workflow: APPROVE -> create PR; REJECT -> NEEDS_HUMAN_INTERVENTION
-        from incidentpilot.agent.approval_resume import resume_after_approval
+        # Resume the persisted LangGraph interrupt. GitHub is invoked by the
+        # resumed graph node, never directly by this API route.
+        from incidentpilot.agent.graph import resume_agent_workflow
 
-        await resume_after_approval(run_id=run.run_id, decision=body.decision)
+        await resume_agent_workflow(
+            run_id=run.run_id,
+            decision=body.decision.value,
+            settings=settings,
+        )
 
         return ApprovalOut.model_validate(approval)
 

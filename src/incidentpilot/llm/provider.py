@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel
+
 
 @dataclass
 class LLMMessage:
@@ -45,6 +47,31 @@ class LLMProvider(ABC):
         system: str | None = None,
         temperature: float = 0.0,
     ) -> LLMResponse: ...
+
+    async def complete_structured(
+        self,
+        schema: type[BaseModel],
+        messages: list[LLMMessage],
+        *,
+        system: str | None = None,
+        temperature: float = 0.0,
+    ) -> BaseModel:
+        """Request JSON and validate it at the provider boundary."""
+        import json
+
+        schema_instruction = (
+            "Return only one JSON object matching this JSON Schema: "
+            + json.dumps(schema.model_json_schema(), separators=(",", ":"))
+        )
+        response = await self.complete(
+            messages,
+            system=f"{system or ''}\n{schema_instruction}".strip(),
+            temperature=temperature,
+        )
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
+        return schema.model_validate_json(content)
 
 
 class FakeLLMProvider(LLMProvider):
@@ -177,10 +204,13 @@ class OpenAICompatibleProvider(LLMProvider):
 def build_llm_provider(
     *,
     llm_enabled: bool,
+    provider_name: str,
     base_url: str,
     api_key: str,
     model: str,
 ) -> LLMProvider:
     if not llm_enabled or not api_key:
         return FakeLLMProvider()
+    if provider_name != "openai-compatible":
+        raise ValueError(f"unsupported LLM provider: {provider_name}")
     return OpenAICompatibleProvider(base_url=base_url, api_key=api_key, model=model)

@@ -6,9 +6,13 @@ Default mode is dry-run/mock so CI never creates external PRs.
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -73,6 +77,13 @@ class GitHubIntegration:
             logger.info("mock PR created for run %s", run_id)
             return result
 
+        if base_commit_sha == "UNVERSIONED":
+            return PullRequestResult(
+                ok=False,
+                mode="real",
+                error="approved artifact has no immutable git base commit",
+            )
+
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
@@ -92,9 +103,111 @@ class GitHubIntegration:
                         error=f"failed to read base ref: {ref_resp.status_code} {ref_resp.text[:200]}",
                     )
                 base_sha = ref_resp.json()["object"]["sha"]
+                if base_sha != base_commit_sha:
+                    return PullRequestResult(
+                        ok=False,
+                        mode="real",
+                        error=(
+                            "approved base commit is stale; revalidation required "
+                            f"(approved={base_commit_sha}, current={base_sha})"
+                        ),
+                    )
+
+                commit_resp = client.get(
+                    f"{self.base_url}/repos/{self.repo}/git/commits/{base_commit_sha}"
+                )
+                if commit_resp.status_code != 200:
+                    return PullRequestResult(
+                        ok=False, mode="real", error="failed to read approved base commit"
+                    )
+                base_tree_sha = commit_resp.json()["tree"]["sha"]
+                changed_paths = []
+                for line in patch_diff.splitlines():
+                    if line.startswith("+++ b/"):
+                        changed_paths.append(line[6:].split("\t", 1)[0])
+                    elif line.startswith("+++ ") and line[4:] != "/dev/null":
+                        changed_paths.append(line[4:].split("\t", 1)[0])
+                changed_paths = list(dict.fromkeys(changed_paths))
+                if not changed_paths:
+                    return PullRequestResult(
+                        ok=False, mode="real", error="approved patch is not a unified diff"
+                    )
+
+                with tempfile.TemporaryDirectory(prefix="incidentpilot-github-") as tmp:
+                    workspace = Path(tmp)
+                    from incidentpilot.sandbox.manager import validate_patch_path
+
+                    for relative in changed_paths:
+                        target = validate_patch_path(workspace, relative)
+                        contents = client.get(
+                            f"{self.base_url}/repos/{self.repo}/contents/{relative}",
+                            params={"ref": base_commit_sha},
+                        )
+                        if contents.status_code != 200:
+                            return PullRequestResult(
+                                ok=False,
+                                mode="real",
+                                error=f"cannot load approved base file: {relative}",
+                            )
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(base64.b64decode(contents.json()["content"]))
+                    patch_path = workspace / "approved.patch"
+                    patch_path.write_text(patch_diff, encoding="utf-8")
+                    applied = subprocess.run(
+                        ["git", "apply", "--check", str(patch_path)],
+                        cwd=workspace,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if applied.returncode != 0:
+                        return PullRequestResult(
+                            ok=False,
+                            mode="real",
+                            error=f"approved patch no longer applies: {applied.stderr[:300]}",
+                        )
+                    subprocess.run(
+                        ["git", "apply", str(patch_path)],
+                        cwd=workspace,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=True,
+                    )
+                    tree_entries = []
+                    for relative in changed_paths:
+                        content = (workspace / relative).read_text(encoding="utf-8")
+                        blob = client.post(
+                            f"{self.base_url}/repos/{self.repo}/git/blobs",
+                            json={"content": content, "encoding": "utf-8"},
+                        )
+                        if blob.status_code not in (200, 201):
+                            return PullRequestResult(
+                                ok=False, mode="real", error=f"failed to create blob: {relative}"
+                            )
+                        tree_entries.append(
+                            {"path": relative, "mode": "100644", "type": "blob", "sha": blob.json()["sha"]}
+                        )
+                    tree = client.post(
+                        f"{self.base_url}/repos/{self.repo}/git/trees",
+                        json={"base_tree": base_tree_sha, "tree": tree_entries},
+                    )
+                    if tree.status_code not in (200, 201):
+                        return PullRequestResult(ok=False, mode="real", error="failed to create tree")
+                    commit = client.post(
+                        f"{self.base_url}/repos/{self.repo}/git/commits",
+                        json={
+                            "message": title,
+                            "tree": tree.json()["sha"],
+                            "parents": [base_commit_sha],
+                        },
+                    )
+                    if commit.status_code not in (200, 201):
+                        return PullRequestResult(ok=False, mode="real", error="failed to create commit")
+                    approved_commit_sha = commit.json()["sha"]
                 create_ref = client.post(
                     f"{self.base_url}/repos/{self.repo}/git/refs",
-                    json={"ref": f"refs/heads/{branch}", "sha": base_sha},
+                    json={"ref": f"refs/heads/{branch}", "sha": approved_commit_sha},
                 )
                 if create_ref.status_code not in (200, 201):
                     return PullRequestResult(

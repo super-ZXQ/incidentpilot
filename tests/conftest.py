@@ -48,6 +48,7 @@ async def client(tmp_path) -> AsyncIterator[AsyncClient]:
     import os
 
     os.environ["DATABASE_URL"] = url
+    os.environ["TOOL_BACKEND"] = "fake"
     reset_settings_cache()
 
     from incidentpilot.api.app import create_app

@@ -21,7 +21,10 @@ ground_truth:
     list_orders loads OrderItems with a per-order query (N+1) after recent commit,
     increasing P95 latency on /orders.
   affected_component: orders-api /app/services orders listing
-  expected_fault_category: database_performance
+  fault_category: database_performance
+  causal_facts:
+    - list_orders performs one OrderItem query per order
+    - per-order access raises orders endpoint P95 latency
   primary_evidence_sources:
     - metrics
     - logs

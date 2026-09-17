@@ -24,9 +24,35 @@ class RunExecutor:
         self.settings = settings or get_settings()
         self._tasks: dict[str, asyncio.Task[None]] = {}
 
-    def submit(self, incident_pk: str, run_id: str) -> None:
-        task = asyncio.create_task(self._run_safe(incident_pk, run_id), name=f"run-{run_id}")
+    def submit(self, incident_pk: str, run_id: str, *, recover: bool = False) -> None:
+        task = asyncio.create_task(
+            self._run_safe(incident_pk, run_id, recover=recover), name=f"run-{run_id}"
+        )
         self._tasks[run_id] = task
+
+    async def recover_non_terminal(self) -> int:
+        """Reschedule DB-backed non-terminal runs after process startup."""
+        from sqlalchemy import select
+
+        from incidentpilot.models.db import AgentRun
+
+        factory = get_session_factory()
+        async with factory() as session:
+            result = await session.execute(
+                select(AgentRun).where(
+                    AgentRun.status.in_(
+                        [AgentRunStatus.PENDING.value, AgentRunStatus.RUNNING.value]
+                    )
+                )
+            )
+            runs = list(result.scalars())
+        for run in runs:
+            self.submit(
+                run.incident_pk,
+                run.run_id,
+                recover=run.status == AgentRunStatus.RUNNING.value,
+            )
+        return len(runs)
 
     async def wait_for(self, run_id: str, timeout: float | None = None) -> None:
         task = self._tasks.get(run_id)
@@ -37,9 +63,9 @@ class RunExecutor:
         except TimeoutError:
             logger.warning("run %s wait timed out", run_id)
 
-    async def _run_safe(self, incident_pk: str, run_id: str) -> None:
+    async def _run_safe(self, incident_pk: str, run_id: str, *, recover: bool = False) -> None:
         try:
-            await self.execute(incident_pk=incident_pk, run_id=run_id)
+            await self.execute(incident_pk=incident_pk, run_id=run_id, recover=recover)
         except Exception:
             logger.exception("run %s crashed", run_id)
             factory = get_session_factory()
@@ -57,7 +83,9 @@ class RunExecutor:
         finally:
             self._tasks.pop(run_id, None)
 
-    async def execute(self, *, incident_pk: str, run_id: str) -> dict[str, Any]:
+    async def execute(
+        self, *, incident_pk: str, run_id: str, recover: bool = False
+    ) -> dict[str, Any]:
         """Execute one agent run."""
         from incidentpilot.agent.graph import run_agent_workflow
         from incidentpilot.observability.otel import configure_otel, start_span
@@ -67,11 +95,29 @@ class RunExecutor:
             "agent_run",
             {"run_id": run_id, "incident_pk": incident_pk},
         ):
-            return await run_agent_workflow(
-                incident_pk=incident_pk,
-                run_id=run_id,
-                settings=self.settings,
-            )
+            try:
+                return await asyncio.wait_for(
+                    run_agent_workflow(
+                        incident_pk=incident_pk,
+                        run_id=run_id,
+                        settings=self.settings,
+                        recover=recover,
+                    ),
+                    timeout=self.settings.run_timeout_seconds,
+                )
+            except TimeoutError:
+                factory = get_session_factory()
+                async with factory() as session:
+                    run = await RunService(session).get(run_id)
+                    if run is not None:
+                        await RunService(session).mark_status(
+                            run,
+                            AgentRunStatus.NEEDS_HUMAN_INTERVENTION,
+                            workflow_state=WorkflowState.NEEDS_HUMAN_INTERVENTION.value,
+                            error="run timeout budget exhausted",
+                            finished=True,
+                        )
+                return {"run_id": run_id, "status": AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value}
 
 
 _executor: RunExecutor | None = None

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -57,9 +59,18 @@ class OrderOut(BaseModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
 
 
-def create_app(database_url: str = "sqlite:///:memory:") -> FastAPI:
+def create_app(database_url: str | None = None) -> FastAPI:
+    database_url = database_url or os.environ.get("REFERENCE_DATABASE_URL", "sqlite:///:memory:")
+    log_path = os.environ.get("REFERENCE_LOG_FILE", "")
+    if log_path and not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        logger.addHandler(logging.FileHandler(path, encoding="utf-8"))
+        logger.setLevel(logging.INFO)
     app = FastAPI(title="orders-api", version="0.1.0")
-    kwargs: dict[str, Any] = {"connect_args": {"check_same_thread": False}}
+    kwargs: dict[str, Any] = {}
+    if database_url.startswith("sqlite"):
+        kwargs["connect_args"] = {"check_same_thread": False}
     if ":memory:" in database_url:
         kwargs["poolclass"] = StaticPool
     engine = create_engine(database_url, **kwargs)
@@ -100,7 +111,21 @@ def create_app(database_url: str = "sqlite:///:memory:") -> FastAPI:
             status = response.status_code
             return response
         finally:
-            observe_request(request.url.path, request.method, status, time.perf_counter() - started)
+            duration = time.perf_counter() - started
+            observe_request(request.url.path, request.method, status, duration)
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "http_request",
+                        "path": request.url.path,
+                        "method": request.method,
+                        "status": status,
+                        "latency_ms": round(duration * 1000, 3),
+                        "fault_type": get_fault().get("fault_type"),
+                        "case_id": get_fault().get("case_id"),
+                    }
+                )
+            )
 
     @app.get("/health")
     def health() -> dict[str, str]:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,14 @@ REFERENCE_LOGS = Path(os.environ.get("REFERENCE_LOGS_PATH", "./reference/orders_
 REFERENCE_ORDERS_API_URL = os.environ.get("REFERENCE_ORDERS_API_URL", "http://127.0.0.1:8001")
 
 mcp = FastMCP("ops-readonly")
+
+
+def _resolve_reference_repo(repository: str) -> Path:
+    configured = REFERENCE_REPO.resolve()
+    candidate = Path(repository).resolve() if repository else configured
+    if candidate != configured:
+        raise ValueError("repository is outside the configured reference repository")
+    return candidate
 
 
 def _read_json_file(path: Path, default: Any) -> Any:
@@ -35,20 +44,21 @@ def read_metrics(service: str = "orders-api", window: str = "incident") -> dict[
     try:
         import httpx
 
-        resp = httpx.get(f"{REFERENCE_ORDERS_API_URL}/metrics", timeout=2.0)
+        resp = httpx.get(f"{REFERENCE_ORDERS_API_URL}/metrics/json", timeout=2.0)
         if resp.status_code == 200:
             data = resp.json()
             data["source"] = "reference_orders_api_http"
             data["window"] = window
             return data
-    except Exception:
-        pass
+    except Exception as exc:
+        http_error = str(exc)
     cached = _read_json_file(REFERENCE_LOGS / "metrics.json", {})
     return {
         "service": service,
         "window": window,
         "source": "reference_logs_cache",
         **cached,
+        **({"error": http_error} if not cached else {}),
     }
 
 
@@ -67,14 +77,15 @@ def read_logs(service: str = "orders-api", window: str = "incident", limit: int 
             except json.JSONDecodeError:
                 continue
     if not lines:
-        lines = [
-            {
-                "event": "orders_list",
-                "latency_ms": 2500,
-                "error": True,
-                "fault_type": "n_plus_one_query",
-            }
-        ]
+        return {
+            "service": service,
+            "window": window,
+            "count": 0,
+            "error_count": 0,
+            "events": [],
+            "error": "structured log source unavailable",
+            "source": str(log_file),
+        }
     errors = [x for x in lines if x.get("error")]
     return {
         "service": service,
@@ -90,7 +101,11 @@ def inspect_git_history(repository: str = "", limit: int = 10) -> dict[str, Any]
     """Inspect git history in the reference repository (read-only)."""
     import subprocess
 
-    repo_path = Path(repository) if repository else REFERENCE_REPO
+    try:
+        repo_path = _resolve_reference_repo(repository)
+    except ValueError as exc:
+        return {"error": str(exc), "repository": repository}
+    limit = max(1, min(int(limit), 50))
     if not repo_path.exists():
         return {"repository": str(repo_path), "commits": [], "source": "missing_repo"}
     try:
@@ -122,7 +137,12 @@ def inspect_git_diff(repository: str = "", commit_sha: str = "HEAD") -> dict[str
     """Inspect a commit diff (read-only)."""
     import subprocess
 
-    repo_path = Path(repository) if repository else REFERENCE_REPO
+    try:
+        repo_path = _resolve_reference_repo(repository)
+    except ValueError as exc:
+        return {"error": str(exc), "repository": repository}
+    if commit_sha != "HEAD" and re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None:
+        return {"error": "invalid commit sha", "commit_sha": commit_sha}
     if not repo_path.exists():
         return {"repository": str(repo_path), "diff": "", "error": "repo missing"}
     try:
@@ -140,13 +160,26 @@ def inspect_git_diff(repository: str = "", commit_sha: str = "HEAD") -> dict[str
 @mcp.tool()
 def read_source_code(repository: str = "", path: str = "app.py") -> dict[str, Any]:
     """Read a source file from the reference repository (read-only)."""
-    repo_path = Path(repository) if repository else REFERENCE_REPO
+    try:
+        repo_path = _resolve_reference_repo(repository)
+    except ValueError as exc:
+        return {"error": str(exc), "repository": repository, "path": path}
+    lowered_parts = {part.lower() for part in Path(path).parts}
+    if any(
+        part == ".env"
+        or part.startswith(".env.")
+        or "credential" in part
+        or "secret" in part
+        or part == ".git"
+        for part in lowered_parts
+    ):
+        return {"error": "sensitive source path forbidden", "path": path}
     file_path = repo_path / path
     # Prevent path escape
     try:
         resolved = file_path.resolve()
         repo_resolved = repo_path.resolve()
-        if not str(resolved).startswith(str(repo_resolved)):
+        if not resolved.is_relative_to(repo_resolved):
             return {"error": "path outside repository", "path": path}
     except Exception as exc:
         return {"error": str(exc), "path": path}
@@ -166,13 +199,6 @@ def query_database_readonly(query: str = "SELECT 1") -> dict[str, Any]:
         from incidentpilot.tools.sql_guard import validate_readonly_sql
 
         validate_readonly_sql(query)
-    except ImportError:
-        forbidden = (
-            "insert", "update", "delete", "drop", "alter", "truncate", "create", "grant", "revoke"
-        )
-        lowered = query.lower().strip()
-        if any(lowered.startswith(kw) or f" {kw} " in f" {lowered} " for kw in forbidden):
-            return {"error": "write SQL forbidden", "query": query}
     except Exception as exc:
         return {"error": str(exc), "query": query, "validated": False}
 
@@ -196,27 +222,12 @@ def query_database_readonly(query: str = "SELECT 1") -> dict[str, Any]:
         except Exception as exc:
             return {"error": str(exc), "query": query, "source": "reference_postgres"}
 
-    db_path = REFERENCE_REPO / "var" / "orders.db"
-    if not db_path.exists():
-        return {
-            "query": query,
-            "rows": [{"note": "reference db not initialized"}],
-            "source": "unavailable",
-        }
-    import sqlite3
-
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cur = conn.execute(query)
-        rows = [
-            dict(zip([c[0] for c in cur.description], row, strict=False))
-            for row in cur.fetchmany(100)
-        ]
-        return {"query": query, "rows": rows, "source": str(db_path)}
-    except Exception as exc:
-        return {"error": str(exc), "query": query}
-    finally:
-        conn.close()
+    return {
+        "error": "REFERENCE_DB_URL must point to the readonly PostgreSQL account",
+        "query": query,
+        "rows": [],
+        "source": "unavailable",
+    }
 
 
 if __name__ == "__main__":

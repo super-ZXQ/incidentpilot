@@ -108,10 +108,18 @@ class ToolGateway:
         missing = [k for k in required if k not in payload]
         if missing:
             raise ValueError(f"missing required fields for {spec.name}: {missing}")
+        if schema.get("additionalProperties") is False:
+            extras = sorted(set(payload) - set(properties))
+            if extras:
+                raise ValueError(f"unexpected fields for {spec.name}: {extras}")
         cleaned: dict[str, Any] = {}
         if properties:
             for key, value in payload.items():
                 if key in properties:
+                    expected = properties[key].get("type")
+                    py_type = {"string": str, "integer": int, "number": (int, float), "boolean": bool}.get(expected)
+                    if py_type is not None and not isinstance(value, py_type):
+                        raise ValueError(f"invalid type for {spec.name}.{key}: expected {expected}")
                     cleaned[key] = value
                 else:
                     # Keep extra fields for flexible tools, but schema-first tools can reject
@@ -189,10 +197,22 @@ class ToolGateway:
 
         for attempt in range(spec.max_retries + 1):
             try:
-                output = await asyncio.wait_for(
-                    _maybe_await(spec.handler(**cleaned)),
-                    timeout=spec.timeout_seconds,
-                )
+                from incidentpilot.observability.otel import start_span
+
+                with start_span(
+                    "tool_gateway.call",
+                    {
+                        "run_id": run_id,
+                        "trace_id": trace_id,
+                        "tool.name": name,
+                        "tool.category": spec.category,
+                        "tool.attempt": attempt,
+                    },
+                ):
+                    output = await asyncio.wait_for(
+                        _maybe_await(spec.handler(**cleaned)),
+                        timeout=spec.timeout_seconds,
+                    )
                 latency = (time.perf_counter() - started) * 1000
                 if not isinstance(output, dict):
                     output = {"result": output}

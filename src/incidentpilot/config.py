@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,14 +23,14 @@ class Settings(BaseSettings):
 
     # Database (control plane)
     database_url: str = Field(
-        default="sqlite+aiosqlite:///./incidentpilot.db",
+        default="postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5433/incidentpilot_app",
         description="Async SQLAlchemy URL for IncidentPilot control plane.",
     )
-    # For PostgreSQL deployments prefer:
-    # postgresql+psycopg://incidentpilot:incidentpilot@localhost:5432/incidentpilot_app
+    # SQLite is supported only when tests explicitly override DATABASE_URL.
 
     # LLM
     llm_base_url: str = Field(default="http://127.0.0.1:9/v1")
+    llm_provider: Literal["openai-compatible", "fake"] = Field(default="openai-compatible")
     llm_api_key: str = Field(default="")
     llm_model: str = Field(default="gpt-4o-mini")
     llm_enabled: bool = Field(default=False)
@@ -58,7 +59,7 @@ class Settings(BaseSettings):
 
     # Sandbox
     sandbox_enabled: bool = Field(default=False)
-    sandbox_image: str = Field(default="python:3.12-slim")
+    sandbox_image: str = Field(default="incidentpilot-sandbox:py312")
     sandbox_network: str = Field(default="none")
 
     # Test-only auto approval (must never default true in production)
@@ -66,6 +67,10 @@ class Settings(BaseSettings):
 
     # MCP server command for live stdio
     mcp_server_command: str = Field(default="")
+    tool_backend: Literal["mcp", "fake"] = Field(
+        default="mcp",
+        description="Formal runtime uses MCP; fake is explicit for deterministic tests only.",
+    )
 
 
 @lru_cache
