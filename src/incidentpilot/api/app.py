@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Response, status
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from incidentpilot.agent.executor import get_run_executor
@@ -24,9 +26,16 @@ from incidentpilot.models.schemas import (
     RunOut,
     ToolCallOut,
 )
+from incidentpilot.observability import metrics as worker_metrics
 from incidentpilot.persistence import repo
+from incidentpilot.persistence.jobs import QueueFullError, create_incident_and_run
 from incidentpilot.persistence.session import get_session, init_db
-from incidentpilot.services.incidents import ApprovalService, IncidentService, RunService
+from incidentpilot.services.incidents import (
+    ApprovalConflict,
+    ApprovalService,
+    IncidentService,
+    RunService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     await init_db()
-    if settings.database_url.startswith("postgresql"):
+    if settings.embedded_worker_enabled:
         await get_run_executor().recover_non_terminal()
     yield
 
@@ -57,6 +66,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def health() -> HealthOut:
         return HealthOut(app=settings.app_name, environment=settings.environment)
 
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Response:
+        return Response(
+            generate_latest(worker_metrics.PROMETHEUS_REGISTRY),
+            media_type=CONTENT_TYPE_LATEST,
+        )
+
     @app.post(
         "/v1/incidents",
         response_model=CreateRunAccepted,
@@ -67,7 +83,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session: AsyncSession = Depends(session_dep),
     ) -> CreateRunAccepted:
         incident_service = IncidentService(session)
-        run_service = RunService(session)
 
         if body.incident_id:
             existing = await incident_service.get(body.incident_id)
@@ -77,21 +92,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     detail=f"incident_id already exists: {body.incident_id}",
                 )
 
-        incident = await incident_service.create_incident(
-            title=body.title,
-            service=body.service,
-            symptom=body.symptom,
-            severity=body.severity.value,
-            repository=body.repository,
-            environment=body.environment,
-            start_time=body.start_time,
-            incident_id=body.incident_id,
-            payload=body.payload,
-        )
-        run = await run_service.create_for_incident(incident)
+        try:
+            incident, run = await create_incident_and_run(
+                session,
+                incident_data={
+                    "title": body.title,
+                    "service": body.service,
+                    "symptom": body.symptom,
+                    "severity": body.severity.value,
+                    "repository": body.repository,
+                    "environment": body.environment,
+                    "start_time": body.start_time,
+                    "incident_id": body.incident_id,
+                    "payload": body.payload,
+                },
+                max_queued_runs=settings.max_queued_runs,
+            )
+        except QueueFullError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={"code": "RUN_QUEUE_FULL", "message": str(exc)},
+            ) from exc
 
         # Fire-and-forget background execution; durable state lives in DB.
-        get_run_executor().submit(incident_pk=incident.id, run_id=run.run_id)
+        if settings.embedded_worker_enabled:
+            get_run_executor().submit(incident_pk=incident.id, run_id=run.run_id)
 
         return CreateRunAccepted(
             incident_id=incident.incident_id,
@@ -171,12 +196,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
         approval_service = ApprovalService(session)
-        approval, run = await approval_service.decide(
-            run,
-            body.decision,
-            actor=body.actor,
-            reason=body.reason,
-        )
+        try:
+            approval, run = await approval_service.decide(
+                run,
+                body.decision,
+                actor=body.actor,
+                reason=body.reason,
+                lease_seconds=settings.job_lease_seconds,
+                owner_id=f"approval-api-{uuid.uuid4().hex[:8]}",
+            )
+        except ApprovalConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         from incidentpilot.models.db import Incident
 
         incident = await session.get(Incident, run.incident_pk)

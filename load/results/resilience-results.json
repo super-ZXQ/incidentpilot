@@ -1,0 +1,134 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-18T01:16:00+00:00",
+  "traffic_kind": "synthetic",
+  "real_github": false,
+  "real_llm": false,
+  "experiments": [
+    {
+      "name": "automated_resilience_suite",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:20:00Z",
+      "measurements": {
+        "passed": 78,
+        "failed": 0,
+        "skipped": 1,
+        "skip_reason": "LLM_API_KEY not configured",
+        "warnings": 1,
+        "duration_seconds": 76.55,
+        "ruff": "All checks passed",
+        "compose_config": "PASS"
+      }
+    },
+    {
+      "name": "postgres_two_worker_claim",
+      "status": "EXECUTED",
+      "measurements": {"competing_claimers": 2, "successful_claims": 1, "result": "PASS"}
+    },
+    {
+      "name": "mcp_stdio_live",
+      "status": "EXECUTED",
+      "measurements": {"passed": 1, "failed": 0}
+    },
+    {
+      "name": "docker_sandbox_live",
+      "status": "EXECUTED",
+      "measurements": {"passed": 2, "failed": 0}
+    },
+    {
+      "name": "reference_fault_lifecycle",
+      "status": "EXECUTED",
+      "measurements": {"passed": 11, "failed": 0}
+    },
+    {
+      "name": "alembic_empty_database_upgrade_sqlite",
+      "status": "EXECUTED",
+      "measurements": {"revision": "0004_worker_leases", "result": "PASS"}
+    },
+    {
+      "name": "alembic_postgresql_upgrade",
+      "status": "EXECUTED",
+      "measurements": {"revision": "0004_worker_leases (head)", "result": "PASS", "dialect": "PostgresqlImpl"}
+    },
+    {
+      "name": "compose_chaos_configuration_validation",
+      "status": "EXECUTED",
+      "measurements": {
+        "result": "PASS",
+        "toxiproxy_image": "ghcr.io/shopify/toxiproxy:2.9.0",
+        "image_digest_sample": "sha256:b44c283298cea49e2defaba1b3028783798346f2a926684e3a345fd8441af3b8",
+        "compose_command": "docker-compose -f docker-compose.yml -f docker-compose.chaos.yml config --quiet"
+      }
+    },
+    {
+      "name": "postgres_latency_disconnect",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:13:30Z",
+      "measurements": {
+        "proxy": "127.0.0.1:15432 -> incidentpilot-postgres:5432",
+        "toxic": "latency 400ms",
+        "baseline_avg_ms": 2.51,
+        "degraded_avg_ms": 3.41,
+        "recovered_avg_ms": 4.18,
+        "ok_queries_baseline_degraded_recovered": [5, 5, 5],
+        "toxic_removed": true
+      }
+    },
+    {
+      "name": "mcp_timeout_reset",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:13:47Z",
+      "measurements": {
+        "orders_api_direct_avg_ms_sample": [1162.82, 1053.98, 1357.76],
+        "via_proxy_latency_avg_ms_sample": [1840.93, 1792.25, 1747.95],
+        "timeout_toxic_disconnects": 2,
+        "recovered_ok": 3,
+        "tool_gateway_final_status": "SUCCEEDED",
+        "tool_gateway_attempt_count": 3,
+        "tool_gateway_retry_delays_s": [0.125, 0.25]
+      }
+    },
+    {
+      "name": "github_429_500_mock",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:14:29Z",
+      "measurements": {
+        "real_github": false,
+        "mock_create_count_for_idempotent_key": 1,
+        "crash_after_create_replay_count": 1,
+        "mock_replay_same_url": true,
+        "note": "Real GitHub HTTP was not called"
+      }
+    },
+    {
+      "name": "locust_concurrent_api",
+      "status": "NOT_EXECUTED",
+      "measurements": {},
+      "note": "Synthetic locustfile present; headless run blocked by local uvicorn factory/startup on this host; no production traffic claimed"
+    },
+    {
+      "name": "worker_process_kill_recovery",
+      "status": "EXECUTED",
+      "measurements": {
+        "result": "PASS",
+        "first_attempt_count": 1,
+        "recovered_attempt_count": 2,
+        "final_status": "WAITING_APPROVAL",
+        "github_enabled": false
+      }
+    },
+    {
+      "name": "dual_worker_process_postgres",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:15:45Z",
+      "measurements": {
+        "workers_spawned": 2,
+        "run_id": "RUN-f99a01f758e8",
+        "final_status": "WAITING_APPROVAL",
+        "workflow_state": "WAIT_FOR_APPROVAL",
+        "attempt_count": 1,
+        "result": "single lease owner; no double execution"
+      }
+    }
+  ]
+}

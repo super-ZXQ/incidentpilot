@@ -22,6 +22,45 @@ logger = logging.getLogger(__name__)
 _TEST_CHECKPOINTER: Any = None
 
 
+async def _persist_patch_artifact_once(run_id: str, artifact: Any) -> str:
+    """Persist immutable output once when a checkpointed node is replayed."""
+    from sqlalchemy import select
+
+    from incidentpilot.models.db import AgentRun, PatchArtifact
+
+    factory = get_session_factory()
+    async with factory() as session:
+        run = (
+            await session.execute(select(AgentRun).where(AgentRun.run_id == run_id))
+        ).scalar_one_or_none()
+        if run is None:
+            return artifact.patch_artifact_id
+        existing = (
+            await session.execute(
+                select(PatchArtifact).where(
+                    PatchArtifact.run_pk == run.id,
+                    PatchArtifact.patch_hash == artifact.patch_hash,
+                    PatchArtifact.test_run_id == artifact.test_run_id,
+                )
+            )
+        ).scalars().first()
+        if existing is not None:
+            return existing.patch_artifact_id
+        session.add(
+            PatchArtifact(
+                patch_artifact_id=artifact.patch_artifact_id,
+                run_pk=run.id,
+                base_commit_sha=artifact.base_commit_sha,
+                patch_diff=artifact.patch_diff,
+                patch_hash=artifact.patch_hash,
+                test_run_id=artifact.test_run_id,
+                immutable=True,
+            )
+        )
+        await session.commit()
+        return artifact.patch_artifact_id
+
+
 class AgentState(TypedDict, total=False):
     run_id: str
     incident_id: str
@@ -142,10 +181,18 @@ async def run_agent_workflow(
 
         # Persist investigation artifacts BEFORE marking terminal status so
         # API consumers never observe a finished run without evidence/tool calls.
+        existing_tool_ids = set(
+            (await session.execute(select(ToolCall.tool_call_id).where(ToolCall.run_pk == run.id)))
+            .scalars()
+            .all()
+        )
         for item in final_state.get("tool_calls") or []:
+            tool_call_id = item.get("tool_call_id") or repo.new_id("TC")
+            if tool_call_id in existing_tool_ids:
+                continue
             session.add(
                 ToolCall(
-                    tool_call_id=item.get("tool_call_id") or repo.new_id("TC"),
+                    tool_call_id=tool_call_id,
                     run_pk=run.id,
                     tool_name=item.get("tool_name", "unknown"),
                     input=item.get("input") or {},
@@ -153,12 +200,23 @@ async def run_agent_workflow(
                     status=item.get("status", "SUCCEEDED"),
                     error=item.get("error"),
                     latency_ms=item.get("latency_ms"),
+                    attempt_count=item.get("attempt_count", 1),
+                    error_category=item.get("error_category"),
+                    trace_id=item.get("trace_id", run.trace_id),
                 )
             )
+        existing_evidence_ids = set(
+            (await session.execute(select(Evidence.evidence_id).where(Evidence.run_pk == run.id)))
+            .scalars()
+            .all()
+        )
         for item in final_state.get("evidence") or []:
+            evidence_id = item.get("evidence_id") or repo.new_id("EVID")
+            if evidence_id in existing_evidence_ids:
+                continue
             session.add(
                 Evidence(
-                    evidence_id=item.get("evidence_id") or repo.new_id("EVID"),
+                    evidence_id=evidence_id,
                     run_pk=run.id,
                     source=item.get("source", ""),
                     source_type=item.get("source_type", "other"),
@@ -613,29 +671,7 @@ async def _run_with_langgraph(
         )
         s["patch_artifact"] = artifact.to_dict()
 
-        factory = get_session_factory()
-        async with factory() as session:
-            from sqlalchemy import select
-
-            from incidentpilot.models.db import AgentRun, PatchArtifact
-
-            run_result = await session.execute(
-                select(AgentRun).where(AgentRun.run_id == s["run_id"])
-            )
-            run = run_result.scalar_one_or_none()
-            if run is not None:
-                session.add(
-                    PatchArtifact(
-                        patch_artifact_id=artifact.patch_artifact_id,
-                        run_pk=run.id,
-                        base_commit_sha=artifact.base_commit_sha,
-                        patch_diff=artifact.patch_diff,
-                        patch_hash=artifact.patch_hash,
-                        test_run_id=artifact.test_run_id,
-                        immutable=True,
-                    )
-                )
-                await session.commit()
+        artifact.patch_artifact_id = await _persist_patch_artifact_once(s["run_id"], artifact)
         manager.destroy_workspace(s["run_id"])
         s["workflow_state"] = WorkflowState.WAIT_FOR_APPROVAL.value
         s["status"] = AgentRunStatus.WAITING_APPROVAL.value
@@ -859,29 +895,7 @@ async def _run_with_langgraph(
         )
         s["patch_artifact"] = artifact.to_dict()
 
-        factory = get_session_factory()
-        async with factory() as session:
-            from sqlalchemy import select
-
-            from incidentpilot.models.db import AgentRun, PatchArtifact
-
-            run_result = await session.execute(
-                select(AgentRun).where(AgentRun.run_id == s["run_id"])
-            )
-            run = run_result.scalar_one_or_none()
-            if run is not None:
-                session.add(
-                    PatchArtifact(
-                        patch_artifact_id=artifact.patch_artifact_id,
-                        run_pk=run.id,
-                        base_commit_sha=artifact.base_commit_sha,
-                        patch_diff=artifact.patch_diff,
-                        patch_hash=artifact.patch_hash,
-                        test_run_id=artifact.test_run_id,
-                        immutable=True,
-                    )
-                )
-                await session.commit()
+        artifact.patch_artifact_id = await _persist_patch_artifact_once(s["run_id"], artifact)
         manager.destroy_workspace(s["run_id"])
         s["workflow_state"] = WorkflowState.WAIT_FOR_APPROVAL.value
         s["status"] = AgentRunStatus.WAITING_APPROVAL.value
@@ -989,6 +1003,10 @@ async def _run_with_langgraph(
         checkpoint_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://")
         async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
             await checkpointer.setup()
+            if recover and resume_value is None:
+                checkpoint = await checkpointer.aget_tuple(config)
+                if checkpoint is None:
+                    invoke_input = dict(state)
             graph = builder.compile(checkpointer=checkpointer)
             result = await graph.ainvoke(invoke_input, config=config)
     else:
@@ -996,6 +1014,10 @@ async def _run_with_langgraph(
         global _TEST_CHECKPOINTER
         if _TEST_CHECKPOINTER is None:
             _TEST_CHECKPOINTER = MemorySaver()
+        if recover and resume_value is None:
+            checkpoint = await _TEST_CHECKPOINTER.aget_tuple(config)
+            if checkpoint is None:
+                invoke_input = dict(state)
         graph = builder.compile(checkpointer=_TEST_CHECKPOINTER)
         result = await graph.ainvoke(invoke_input, config=config)
     return dict(result)

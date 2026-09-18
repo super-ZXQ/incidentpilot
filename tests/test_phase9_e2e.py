@@ -25,6 +25,7 @@ async def test_e2e_full_loop_investigate_fix_approve_pr(tmp_path) -> None:
     os.environ["OTEL_CONSOLE_EXPORTER"] = "false"
     os.environ["GITHUB_INTEGRATION_ENABLED"] = "false"
     os.environ["TOOL_BACKEND"] = "fake"
+    os.environ["EMBEDDED_WORKER_ENABLED"] = "true"
     reset_settings_cache()
     await init_db()
 

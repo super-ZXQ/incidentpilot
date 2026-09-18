@@ -6,9 +6,15 @@ import asyncio
 
 import pytest
 
+from incidentpilot.github.integration import GitHubIntegration
+
 
 @pytest.mark.asyncio
-async def test_double_approve_single_pr(client) -> None:
+async def test_double_approve_single_pr(client, monkeypatch) -> None:
+    github = GitHubIntegration(enabled=False)
+    monkeypatch.setattr(
+        "incidentpilot.agent.approval_resume.default_github_integration", lambda: github
+    )
     payload = {
         "title": "orders latency idempotency",
         "service": "orders-api",
@@ -26,23 +32,21 @@ async def test_double_approve_single_pr(client) -> None:
         await asyncio.sleep(0.1)
     assert run["status"] == "WAITING_APPROVAL"
 
-    a1 = await client.post(
-        f"/v1/runs/{data['run_id']}/approval",
-        json={"decision": "APPROVE", "actor": "t1"},
+    a1, a2 = await asyncio.gather(
+        client.post(
+            f"/v1/runs/{data['run_id']}/approval",
+            json={"decision": "APPROVE", "actor": "t1"},
+        ),
+        client.post(
+            f"/v1/runs/{data['run_id']}/approval",
+            json={"decision": "APPROVE", "actor": "t2"},
+        ),
     )
-    assert a1.status_code == 200
+    assert sorted([a1.status_code, a2.status_code]) == [200, 409]
     run2 = (await client.get(f"/v1/runs/{data['run_id']}")).json()
     assert run2["status"] == "RESOLVED"
-    pr_count_1 = 1  # resolved implies one PR attempt
-
-    a2 = await client.post(
-        f"/v1/runs/{data['run_id']}/approval",
-        json={"decision": "APPROVE", "actor": "t2"},
-    )
-    # Second approve should fail (not waiting) or be ignored without second PR
-    assert a2.status_code in {200, 409}
     run3 = (await client.get(f"/v1/runs/{data['run_id']}")).json()
     assert run3["status"] == "RESOLVED"
-    # still a single pull_request object
     assert "pull_request" in run3["result"]
-    assert run3["result"]["pull_request"]["number"] == pr_count_1 or run3["result"]["pull_request"]["number"] is not None
+    assert github.creation_call_count == 1
+    assert len(github.created) == 1

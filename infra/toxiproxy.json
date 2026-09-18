@@ -1,0 +1,14 @@
+[
+  {
+    "name": "incidentpilot-postgres",
+    "listen": "0.0.0.0:15432",
+    "upstream": "incidentpilot-postgres:5432",
+    "enabled": true
+  },
+  {
+    "name": "ops-mcp",
+    "listen": "0.0.0.0:18001",
+    "upstream": "reference-orders-api:8001",
+    "enabled": true
+  }
+]

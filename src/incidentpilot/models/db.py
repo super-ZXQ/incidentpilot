@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from incidentpilot.models.enums import (
@@ -73,6 +73,16 @@ class AgentRun(Base):
     trace_id: Mapped[str] = mapped_column(String(64), default="")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    attempt_count: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
@@ -136,6 +146,9 @@ class ToolCall(Base):
     status: Mapped[str] = mapped_column(String(32), default=ToolCallStatus.PENDING.value)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     latency_ms: Mapped[float | None] = mapped_column(nullable=True)
+    attempt_count: Mapped[int] = mapped_column(default=1)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trace_id: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     run: Mapped[AgentRun] = relationship(back_populates="tool_calls")
@@ -216,3 +229,24 @@ class AuditEvent(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ExternalSideEffect(Base):
+    __tablename__ = "external_side_effects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    run_pk: Mapped[str] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    effect_type: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    attempt_count: Mapped[int] = mapped_column(default=0)
+    result: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_pk", "effect_type", name="ux_side_effect_run_type"),
+    )

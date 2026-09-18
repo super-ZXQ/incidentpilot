@@ -26,6 +26,24 @@ async def test_github_mock_mode_creates_pr() -> None:
 
 
 @pytest.mark.asyncio
+async def test_github_mock_idempotency_key_prevents_duplicate_creation() -> None:
+    gh = GitHubIntegration(enabled=False)
+    arguments = {
+        "run_id": "RUN-crash-window",
+        "title": "t",
+        "body": "b",
+        "patch_diff": "diff",
+        "base_commit_sha": "abc",
+        "idempotency_key": "github_pr:RUN-crash-window:hash",
+    }
+    first = gh.create_pull_request(**arguments)
+    replayed = gh.create_pull_request(**arguments)
+    assert first.pr_url == replayed.pr_url
+    assert gh.creation_call_count == 1
+    assert len(gh.created) == 1
+
+
+@pytest.mark.asyncio
 async def test_approval_approve_creates_mock_pr(client) -> None:
     payload = {
         "title": "orders latency p7",

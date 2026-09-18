@@ -1,0 +1,157 @@
+{
+  "generated_at": "2026-09-18T01:21:50.251110+00:00",
+  "results": [
+    {
+      "name": "postgres_latency_disconnect",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:21:20.526040+00:00",
+      "proxy": "127.0.0.1:15432 -> incidentpilot-postgres:5432",
+      "toxic_created": "latency",
+      "toxic_removed": true,
+      "measurements": {
+        "baseline": {
+          "label": "baseline",
+          "queries": 5,
+          "ok": 5,
+          "errors": 0,
+          "duration_seconds": 0.0144,
+          "avg_ms": 2.88,
+          "last_error": ""
+        },
+        "degraded": {
+          "label": "with_latency_400ms",
+          "queries": 5,
+          "ok": 5,
+          "errors": 0,
+          "duration_seconds": 0.0122,
+          "avg_ms": 2.45,
+          "last_error": ""
+        },
+        "recovered": {
+          "label": "after_toxic_removed",
+          "queries": 5,
+          "ok": 5,
+          "errors": 0,
+          "duration_seconds": 0.0109,
+          "avg_ms": 2.19,
+          "last_error": ""
+        },
+        "latency_delta_ms": -0.43,
+        "recover_delta_ms": -0.26
+      },
+      "conclusion": "measurements recorded; see fields"
+    },
+    {
+      "name": "mcp_timeout_reset",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:21:38.106196+00:00",
+      "measurements": {
+        "orders_api_direct": [
+          {
+            "status_code": 200,
+            "duration_ms": 1123.72,
+            "ok": true
+          },
+          {
+            "status_code": 200,
+            "duration_ms": 1080.07,
+            "ok": true
+          },
+          {
+            "status_code": 200,
+            "duration_ms": 960.15,
+            "ok": true
+          }
+        ],
+        "via_proxy_with_latency": [
+          {
+            "status_code": 200,
+            "duration_ms": 1762.22,
+            "ok": true
+          },
+          {
+            "status_code": 200,
+            "duration_ms": 1821.29,
+            "ok": true
+          },
+          {
+            "status_code": 200,
+            "duration_ms": 1742.31,
+            "ok": true
+          }
+        ],
+        "via_proxy_timeout_toxic": [
+          {
+            "status_code": null,
+            "duration_ms": 927.91,
+            "ok": false,
+            "error": "Server disconnected without sending a response."
+          },
+          {
+            "status_code": null,
+            "duration_ms": 958.91,
+            "ok": false,
+            "error": "Server disconnected without sending a response."
+          }
+        ],
+        "via_proxy_recovered": [
+          {
+            "status_code": 200,
+            "duration_ms": 1046.23,
+            "ok": true
+          },
+          {
+            "status_code": 200,
+            "duration_ms": 965.48,
+            "ok": true
+          },
+          {
+            "status_code": 200,
+            "duration_ms": 1098.05,
+            "ok": true
+          }
+        ],
+        "tool_gateway_classified": {
+          "final_status": "SUCCEEDED",
+          "attempt_count": 3,
+          "error_category": null,
+          "retry_delays": [
+            0.125,
+            0.25
+          ],
+          "transient_categories_observed": true
+        }
+      },
+      "conclusion": "Tool Gateway treated timeout/reset as transient and retried with backoff"
+    },
+    {
+      "name": "github_429_500_mock",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:21:38.112012+00:00",
+      "real_github": false,
+      "measurements": {
+        "mock_create_count_for_idempotent_key": 1,
+        "mock_replay_same_url": true,
+        "crash_after_create_replay_count": 1,
+        "crash_after_create_same_url": true,
+        "stub_transport_available": true,
+        "note": "Real GitHub HTTP was not called; stub/mock only. Real GitHub disabled."
+      },
+      "conclusion": "idempotency key prevents duplicate PR after crash-after-create"
+    },
+    {
+      "name": "dual_worker_process_postgres",
+      "status": "EXECUTED",
+      "measured_at": "2026-09-18T01:21:50.250507+00:00",
+      "workers_spawned": 2,
+      "measurements": {
+        "run_id": "RUN-600097ddb74e",
+        "status": "WAITING_APPROVAL",
+        "worker_id": null,
+        "attempt_count": 1,
+        "workflow_state": "WAIT_FOR_APPROVAL"
+      },
+      "note": "Two real OS worker processes against PostgreSQL; lease decides ownership."
+    }
+  ]
+}

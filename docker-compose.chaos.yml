@@ -1,0 +1,35 @@
+services:
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    ports:
+      - "8474:8474"
+      - "15432:15432"
+      - "18001:18001"
+    volumes:
+      - ./infra/toxiproxy.json:/config/toxiproxy.json:ro
+
+  incidentpilot-worker-a:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    command: ["python", "-m", "incidentpilot.worker"]
+    environment: &worker-environment
+      DATABASE_URL: postgresql+psycopg://incidentpilot:incidentpilot@incidentpilot-postgres:5432/incidentpilot_app
+      GITHUB_INTEGRATION_ENABLED: "false"
+      WORKER_CONCURRENCY: "2"
+      JOB_LEASE_SECONDS: "20"
+      JOB_HEARTBEAT_SECONDS: "5"
+    depends_on:
+      incidentpilot-postgres:
+        condition: service_healthy
+
+  incidentpilot-worker-b:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    command: ["python", "-m", "incidentpilot.worker"]
+    environment: *worker-environment
+    depends_on:
+      incidentpilot-postgres:
+        condition: service_healthy

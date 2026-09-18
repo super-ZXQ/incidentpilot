@@ -116,6 +116,7 @@ docker compose build sandbox-image
 docker compose up -d incidentpilot-postgres reference-postgres reference-orders-api prometheus
 uv run alembic upgrade head
 uv run uvicorn incidentpilot.api.app:app --factory --port 8000
+uv run python -m incidentpilot.worker
 ```
 
 Suggested environment:
@@ -142,6 +143,11 @@ For a real model also set `LLM_ENABLED=true`, `LLM_PROVIDER=openai-compatible`, 
 - `GET /v1/runs/{run_id}/tool-calls`
 - `GET /v1/runs/{run_id}/patch-artifact`
 - `POST /v1/runs/{run_id}/approval` — `APPROVE` or `REJECT`
+- `GET /metrics` — bounded-label Prometheus worker/tool metrics
+
+The API only persists Incident/AgentRun state. Production mode does **not** execute investigations inside the API process. PostgreSQL is the queue and coordination store; independent workers (`python -m incidentpilot.worker`) atomically claim rows with `FOR UPDATE SKIP LOCKED`, renew leases, and resume expired work from LangGraph checkpoints. `EMBEDDED_WORKER_ENABLED=true` exists **only for tests and local development**. Queue saturation returns `429` with `RUN_QUEUE_FULL`.
+
+Experiments that were actually executed are listed in `docs/RESILIENCE_REPORT.md`. Unexecuted items (e.g. Locust on this host, real GitHub PRs) are marked not executed and are not claimed as verified.
 
 ## Tests
 
@@ -153,6 +159,8 @@ uv run pytest -q -m docker -rs
 ```
 
 CI runs Python 3.12, `uv`, Ruff, pytest, and PostgreSQL without LLM or GitHub credentials. Real LLM/GitHub checks are optional and reported separately.
+
+`load/locustfile.py` is synthetic load for concurrent create/poll/approve and queue backpressure. `docker-compose.chaos.yml` provides opt-in Toxiproxy (`ghcr.io/shopify/toxiproxy:2.9.0`) and two-worker experiments. On Windows use `docker-compose` if the `docker compose` plugin is missing. These are **not** real business traffic; executed and unexecuted results are distinguished in `docs/RESILIENCE_REPORT.md` and `load/results/resilience-results.json`.
 
 ## Repository structure
 
@@ -176,7 +184,7 @@ Inject a fault, submit its Incident without fault ID/Ground Truth, watch model-s
 
 ## Limitations
 
-- V1 is single-instance, not a distributed worker platform.
+- V1 supports a small bounded set of PostgreSQL-coordinated workers, not unlimited horizontal scaling.
 - The Docker sandbox is controlled isolation, not a hostile multi-tenant boundary.
 - Several reference faults are deterministic application-level injections rather than failures from an external managed service.
 - Real LLM quality, GitHub mutation, Docker execution, and PostgreSQL recovery are claimed only when those dependencies were actually exercised.

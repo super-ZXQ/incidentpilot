@@ -118,6 +118,26 @@ class RunExecutor:
                             finished=True,
                         )
                 return {"run_id": run_id, "status": AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value}
+            except Exception as exc:
+                from incidentpilot.llm.provider import StructuredOutputError
+
+                if not isinstance(exc, StructuredOutputError):
+                    raise
+                factory = get_session_factory()
+                async with factory() as session:
+                    run = await RunService(session).get(run_id)
+                    if run is not None:
+                        await RunService(session).mark_status(
+                            run,
+                            AgentRunStatus.NEEDS_HUMAN_INTERVENTION,
+                            workflow_state=WorkflowState.NEEDS_HUMAN_INTERVENTION.value,
+                            error=str(exc),
+                            finished=True,
+                        )
+                return {
+                    "run_id": run_id,
+                    "status": AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value,
+                }
 
 
 _executor: RunExecutor | None = None

@@ -28,7 +28,7 @@ async def resume_after_approval(
     async with factory() as session:
         from sqlalchemy import select
 
-        from incidentpilot.models.db import AgentRun, PatchArtifact
+        from incidentpilot.models.db import AgentRun, ExternalSideEffect, PatchArtifact
 
         result = await session.execute(select(AgentRun).where(AgentRun.run_id == run_id))
         run = result.scalar_one_or_none()
@@ -68,6 +68,40 @@ async def resume_after_approval(
             )
             return {"status": run.status, "error": "missing patch artifact"}
 
+        idempotency_key = f"github_pr:{run.run_id}:{artifact.patch_hash}"
+        effect_result = await session.execute(
+            select(ExternalSideEffect)
+            .where(ExternalSideEffect.idempotency_key == idempotency_key)
+            .with_for_update()
+        )
+        effect = effect_result.scalar_one_or_none()
+        if effect is not None and effect.status == "COMPLETED":
+            from incidentpilot.observability.metrics import DUPLICATE_SIDE_EFFECTS
+
+            DUPLICATE_SIDE_EFFECTS.inc()
+            pull_request = dict(effect.result)
+            await service.mark_status(
+                run,
+                AgentRunStatus.RESOLVED,
+                workflow_state=WorkflowState.RESOLVED.value,
+                result={**(run.result or {}), "pull_request": pull_request},
+                finished=True,
+            )
+            return {"status": run.status, "pull_request": pull_request}
+        if effect is None:
+            effect = ExternalSideEffect(
+                run_pk=run.id,
+                effect_type="github_pull_request",
+                idempotency_key=idempotency_key,
+                status="IN_PROGRESS",
+                attempt_count=1,
+            )
+            session.add(effect)
+        else:
+            effect.status = "IN_PROGRESS"
+            effect.attempt_count += 1
+        await session.commit()
+
         pr = github.create_pull_request(
             run_id=run.run_id,
             title=f"IncidentPilot fix for {run.run_id}",
@@ -79,8 +113,12 @@ async def resume_after_approval(
             ),
             patch_diff=artifact.patch_diff,
             base_commit_sha=artifact.base_commit_sha,
+            idempotency_key=idempotency_key,
         )
         if not pr.ok:
+            effect.status = "FAILED"
+            effect.error = pr.error or "github pr failed"
+            await session.commit()
             await service.mark_status(
                 run,
                 AgentRunStatus.FAILED,
@@ -90,22 +128,27 @@ async def resume_after_approval(
             )
             return {"status": run.status, "error": pr.error, "mode": pr.mode}
 
+        pull_request = {
+            "url": pr.pr_url,
+            "number": pr.pr_number,
+            "branch": pr.branch,
+            "mode": pr.mode,
+        }
+        effect.status = "COMPLETED"
+        effect.result = pull_request
+        effect.error = None
+        await session.commit()
         await service.mark_status(
             run,
             AgentRunStatus.RESOLVED,
             workflow_state=WorkflowState.RESOLVED.value,
             result={
                 **(run.result or {}),
-                "pull_request": {
-                    "url": pr.pr_url,
-                    "number": pr.pr_number,
-                    "branch": pr.branch,
-                    "mode": pr.mode,
-                },
+                "pull_request": pull_request,
             },
             finished=True,
         )
         return {
             "status": run.status,
-            "pull_request": pr.details | {"url": pr.pr_url, "mode": pr.mode, "number": pr.pr_number},
+            "pull_request": pr.details | pull_request,
         }

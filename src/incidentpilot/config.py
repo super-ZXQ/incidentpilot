@@ -50,6 +50,15 @@ class Settings(BaseSettings):
         description="Evaluation-only stop after a verified root cause; API incidents cannot override it.",
     )
 
+    # Durable PostgreSQL worker queue
+    embedded_worker_enabled: bool = Field(default=False)
+    worker_concurrency: int = Field(default=2, ge=1, le=32)
+    worker_poll_seconds: float = Field(default=0.5, gt=0, le=30)
+    job_lease_seconds: int = Field(default=60, ge=10, le=3600)
+    job_heartbeat_seconds: int = Field(default=15, ge=1, le=600)
+    max_job_attempts: int = Field(default=3, ge=1, le=20)
+    max_queued_runs: int = Field(default=100, ge=1, le=10000)
+
     # Reference environment
     reference_orders_api_url: str = Field(default="http://127.0.0.1:8001")
     reference_db_url: str = Field(default="")

@@ -93,6 +93,9 @@ class ToolCallOut(BaseModel):
     status: str
     error: str | None = None
     latency_ms: float | None = None
+    attempt_count: int = 1
+    error_category: str | None = None
+    trace_id: str = ""
     created_at: datetime
 
     model_config = {"from_attributes": True}

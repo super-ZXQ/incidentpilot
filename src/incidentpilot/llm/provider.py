@@ -12,6 +12,10 @@ from typing import Any
 from pydantic import BaseModel
 
 
+class StructuredOutputError(RuntimeError):
+    """A model exhausted the bounded structured-output repair attempts."""
+
+
 @dataclass
 class LLMMessage:
     role: str
@@ -63,15 +67,29 @@ class LLMProvider(ABC):
             "Return only one JSON object matching this JSON Schema: "
             + json.dumps(schema.model_json_schema(), separators=(",", ":"))
         )
-        response = await self.complete(
-            messages,
-            system=f"{system or ''}\n{schema_instruction}".strip(),
-            temperature=temperature,
-        )
-        content = response.content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
-        return schema.model_validate_json(content)
+        last_error: Exception | None = None
+        repair_messages = list(messages)
+        for _ in range(3):
+            response = await self.complete(
+                repair_messages,
+                system=f"{system or ''}\n{schema_instruction}".strip(),
+                temperature=temperature,
+            )
+            content = response.content.strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
+            try:
+                return schema.model_validate_json(content)
+            except (ValueError, TypeError) as exc:
+                last_error = exc
+                repair_messages = [
+                    *messages,
+                    LLMMessage(
+                        role="user",
+                        content="The previous output was invalid. Return only schema-valid JSON.",
+                    ),
+                ]
+        raise StructuredOutputError("structured output invalid after 3 attempts") from last_error
 
 
 class FakeLLMProvider(LLMProvider):
@@ -177,17 +195,31 @@ class OpenAICompatibleProvider(LLMProvider):
             "Return only one JSON object matching this JSON Schema: "
             + json.dumps(schema.model_json_schema(), separators=(",", ":"))
         )
-        response = await self._complete(
-            messages,
-            system=f"{system or ''}\n{schema_instruction}".strip(),
-            temperature=temperature,
-            response_format={"type": "json_object"},
-            max_tokens=16384,
-        )
-        content = response.content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
-        return schema.model_validate_json(content)
+        last_error: Exception | None = None
+        repair_messages = list(messages)
+        for _ in range(3):
+            response = await self._complete(
+                repair_messages,
+                system=f"{system or ''}\n{schema_instruction}".strip(),
+                temperature=temperature,
+                response_format={"type": "json_object"},
+                max_tokens=16384,
+            )
+            content = response.content.strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
+            try:
+                return schema.model_validate_json(content)
+            except (ValueError, TypeError) as exc:
+                last_error = exc
+                repair_messages = [
+                    *messages,
+                    LLMMessage(
+                        role="user",
+                        content="The previous output was invalid. Return only schema-valid JSON.",
+                    ),
+                ]
+        raise StructuredOutputError("structured output invalid after 3 attempts") from last_error
 
     async def _complete(
         self,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 import psycopg
@@ -17,6 +18,45 @@ def test_alembic_schema_exists_in_postgres() -> None:
         )
         tables = {row[0] for row in cursor.fetchall()}
     assert {"incidents", "agent_runs", "evidence", "patch_artifacts", "approvals"} <= tables
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_two_postgres_workers_claim_one_run() -> None:
+    url = os.environ.get("POSTGRES_TEST_URL")
+    if not url:
+        pytest.skip("POSTGRES_TEST_URL not configured")
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from incidentpilot.persistence.jobs import claim_next_run, create_incident_and_run
+
+    async_url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+    engine = create_async_engine(async_url)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        _, expected = await create_incident_and_run(
+            session,
+            incident_data={
+                "title": "postgres worker claim",
+                "service": "orders-api",
+                "symptom": "latency",
+            },
+            max_queued_runs=1000,
+        )
+
+    async def claim(worker_id: str):
+        async with factory() as session:
+            return await claim_next_run(
+                session,
+                worker_id=worker_id,
+                lease_seconds=30,
+                max_attempts=3,
+            )
+
+    claims = await asyncio.gather(claim("pg-worker-a"), claim("pg-worker-b"))
+    matching = [item for item in claims if item is not None and item.run_id == expected.run_id]
+    assert len(matching) == 1
+    await engine.dispose()
 
 
 @pytest.mark.integration

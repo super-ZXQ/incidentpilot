@@ -47,6 +47,8 @@ class GitHubIntegration:
         self.enabled = enabled and bool(self.token) and bool(self.repo)
         self.base_url = base_url.rstrip("/")
         self.created: list[PullRequestResult] = []
+        self.creation_call_count = 0
+        self._results_by_key: dict[str, PullRequestResult] = {}
 
     def create_pull_request(
         self,
@@ -57,7 +59,10 @@ class GitHubIntegration:
         patch_diff: str,
         base_commit_sha: str,
         base_branch: str = "main",
+        idempotency_key: str = "",
     ) -> PullRequestResult:
+        if idempotency_key and idempotency_key in self._results_by_key:
+            return self._results_by_key[idempotency_key]
         if not self.enabled:
             result = PullRequestResult(
                 ok=True,
@@ -74,6 +79,9 @@ class GitHubIntegration:
                 },
             )
             self.created.append(result)
+            self.creation_call_count += 1
+            if idempotency_key:
+                self._results_by_key[idempotency_key] = result
             logger.info("mock PR created for run %s", run_id)
             return result
 
@@ -92,6 +100,24 @@ class GitHubIntegration:
         branch = f"incidentpilot/{run_id}"
         try:
             with httpx.Client(timeout=30.0, headers=headers) as client:
+                owner = self.repo.split("/", 1)[0]
+                existing = client.get(
+                    f"{self.base_url}/repos/{self.repo}/pulls",
+                    params={"state": "all", "head": f"{owner}:{branch}"},
+                )
+                if existing.status_code == 200 and existing.json():
+                    data = existing.json()[0]
+                    result = PullRequestResult(
+                        ok=True,
+                        mode="real",
+                        pr_url=data.get("html_url", ""),
+                        pr_number=data.get("number"),
+                        branch=branch,
+                        details={"deduplicated": True},
+                    )
+                    if idempotency_key:
+                        self._results_by_key[idempotency_key] = result
+                    return result
                 # Create branch from base commit
                 ref_resp = client.get(
                     f"{self.base_url}/repos/{self.repo}/git/ref/heads/{base_branch}"
@@ -245,6 +271,9 @@ class GitHubIntegration:
                     details={"base_sha": base_sha},
                 )
                 self.created.append(result)
+                self.creation_call_count += 1
+                if idempotency_key:
+                    self._results_by_key[idempotency_key] = result
                 return result
         except Exception as exc:
             return PullRequestResult(ok=False, mode="real", branch=branch, error=str(exc))
