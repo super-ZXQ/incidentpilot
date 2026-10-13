@@ -342,7 +342,7 @@ class SandboxManager:
             import sys
 
             cmd[0] = sys.executable
-            allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"}
+            allowed = {"PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "TEMP", "TMP"}
             env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
             env["PYTHONPATH"] = str(repo)
             env["PYTHONDONTWRITEBYTECODE"] = "1"

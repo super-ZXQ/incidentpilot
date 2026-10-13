@@ -125,6 +125,25 @@ def test_sensitive_files_are_excluded(tmp_path, name):
         manager.destroy_workspace("copy")
 
 
+async def test_local_sandbox_keeps_system_drive_without_exposing_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("SystemDrive", "C:")
+    monkeypatch.setenv("INCIDENTPILOT_TEST_SECRET", "must-not-reach-child")
+    (tmp_path / "test_environment.py").write_text(
+        "import os\n"
+        "def test_environment():\n"
+        "    assert os.environ['SystemDrive'] == 'C:'\n"
+        "    assert 'INCIDENTPILOT_TEST_SECRET' not in os.environ\n",
+        encoding="utf-8",
+    )
+    manager = SandboxManager(Settings(environment="test", sandbox_enabled=False))
+    try:
+        manager.create_workspace("system-drive", tmp_path)
+        result = await manager.run_tests_async("system-drive")
+        assert result.ok, result.stdout + result.stderr
+    finally:
+        manager.destroy_workspace("system-drive")
+
+
 async def test_protected_environment_never_runs_local(tmp_path):
     (tmp_path / "app.py").write_text("x = 1")
     manager = SandboxManager(Settings(environment="production", sandbox_enabled=False))

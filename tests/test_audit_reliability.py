@@ -85,12 +85,26 @@ async def test_needs_human_with_existing_evidence_stops_graph(db_session, monkey
 
 def process_alive(pid):
     if os.name == "nt":
-        return str(pid) in subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True).stdout
+        output = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, check=True).stdout
+        return f'"{pid}"'.encode("ascii") in output
     try:
         os.kill(pid, 0)
         return True
     except ProcessLookupError:
         return False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows tasklist output")
+@pytest.mark.parametrize("pid,expected", [(1234, True), (234, False)])
+def test_process_alive_accepts_local_code_page_output(monkeypatch, pid, expected):
+    output = '"进程.exe","1234","Console","1","1,024 K"\r\n'.encode("gbk")
+
+    def tasklist(command, **kwargs):
+        assert command[0] == "tasklist"
+        return subprocess.CompletedProcess(command, 0, stdout=output.decode("utf-8") if kwargs.get("text") else output)
+
+    monkeypatch.setattr(subprocess, "run", tasklist)
+    assert process_alive(pid) is expected
 
 
 async def test_cancellation_reaps_process_and_keeps_loop_responsive(tmp_path):

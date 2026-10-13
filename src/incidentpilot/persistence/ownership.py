@@ -48,21 +48,24 @@ async def workflow_lock(run_id: str, settings):
         return
     import asyncio
 
-    from incidentpilot.persistence.session import get_session_factory
+    from incidentpilot.persistence.session import get_engine
 
     key = int.from_bytes(hashlib.sha256(run_id.encode()).digest()[:8], "big", signed=True)
-    async with get_session_factory()() as session:
+    async with get_engine(settings.database_url).connect() as connection:
+        connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
         acquired = False
         try:
             while not acquired:
-                acquired = bool(await session.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}))
+                acquired = bool(await connection.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key}))
                 if not acquired:
-                    await session.rollback()
                     await asyncio.sleep(0.1)
-            # Keep this connection pinned until unlock; do not return a locked
-            # connection to the pool via commit/rollback.
+            # Pin the session lock without an open transaction: checkpoint
+            # CREATE INDEX CONCURRENTLY must not wait on our own snapshot.
             yield
         finally:
             if acquired:
-                await session.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
-            await session.rollback()
+                try:
+                    await connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+                except BaseException:
+                    await connection.invalidate()
+                    raise

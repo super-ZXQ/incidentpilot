@@ -173,6 +173,9 @@ async def run_agent_workflow(
             "trace_id": run.trace_id,
         }
 
+        # Release the snapshot opened by mark_running's refresh before
+        # checkpoint setup creates concurrent indexes on its own connection.
+        await session.commit()
         if hasattr(_adapter, "connect"):
             await _adapter.connect()
         try:
