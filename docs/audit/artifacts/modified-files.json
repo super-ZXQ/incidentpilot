@@ -48,6 +48,8 @@
     "docs/audit/artifacts/original-case-hashes.json",
     "docs/audit/artifacts/postgres-migration.log",
     "docs/audit/artifacts/postgres-pause.json",
+    "docs/audit/artifacts/pytest-20261014.log",
+    "docs/audit/artifacts/pytest-20261014.xml",
     "docs/audit/artifacts/pytest-final.log",
     "docs/audit/artifacts/pytest-final.xml",
     "docs/audit/artifacts/pytest-windows-followup.log",

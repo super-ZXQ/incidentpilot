@@ -67,9 +67,23 @@
 
 ### 后续 Windows 复验：未通过
 
-后续在未配置 `AUDIT_POSTGRES_URL` / `POSTGRES_TEST_URL` 的本机环境中，完整运行结果为 **7 failed / 188 passed / 10 skipped / 14 warnings，410.20s**。已保存经本机用户路径脱敏的日志 `artifacts/pytest-windows-followup.log`。此前 204 passed 的日志保留为历史记录；当前不能宣称全套测试通过。
+后续在未配置 `AUDIT_POSTGRES_URL` / `POSTGRES_TEST_URL` 的本机环境中，完整运行结果为 **7 failed / 188 passed / 10 skipped / 14 warnings，410.20s**。已保存经本机用户路径脱敏的日志 `artifacts/pytest-windows-followup.log`。此前 204 passed 的日志保留为历史记录；该次复验未通过。
 
-接手调查报告定位了两个待修问题：本地沙箱环境过滤缺少 `SystemDrive`，Windows 缓存可能以相对路径写入工作区，触发完整性检查失败；取消回收测试按 UTF-8 解码 `tasklist` 的本机代码页输出，产生 `UnicodeDecodeError`。本次仅核对失败日志，未独立重复根因实验，未修改实现。这两项需修复并重新运行；未配置测试库的 PostgreSQL 用例也需在专用数据库上补跑。
+接手调查报告定位了两个问题：本地沙箱环境过滤缺少 `SystemDrive`，Windows 缓存可能以相对路径写入工作区，触发完整性检查失败；取消回收测试按 UTF-8 解码 `tasklist` 的本机代码页输出，产生 `UnicodeDecodeError`。接手检查时仅核对失败日志，未独立重复根因实验，未修改实现。后续修复与复验见下节。
+
+### 2026-10-14 修复与完整复验
+
+代码提交 `1676dfb` 修复了以下问题：
+
+- 本地沙箱允许传递 `SystemDrive`。新增真实子进程测试验证该变量可用、测试秘密变量不可见；修复前该用例失败。
+- Windows `tasklist` 输出按字节检查完整带引号 PID，避免本机代码页解码失败和 PID 子串误匹配。新增 GBK 输出回归用例，修复前两项均失败。
+- 首次 PostgreSQL checkpoint 初始化存在实际阻塞：`CREATE INDEX CONCURRENTLY` 等待本流程未结束的事务。工作流进入前结束刷新产生的读取事务；advisory lock 使用固定 autocommit 连接，保持跨 Worker 串行化而不持有长事务，解锁异常时丢弃连接。未调大超时、未跳过用例。全新数据库上的取消恢复测试由超时失败转为通过（3.05s）。
+
+Windows 完整复验结果：**207 passed / 1 skipped / 15 warnings，205.99s**。证据为 `artifacts/pytest-20261014.log`、`artifacts/pytest-20261014.xml`，本机用户路径及 XML 主机名已脱敏。使用专用 PostgreSQL 容器和独立只读账号，数据库迁移 0001 → 0005 成功；八项 PostgreSQL 检查、Docker 和 MCP 用例均已执行。唯一跳过项为缺少 `LLM_API_KEY` 的真实模型测试。警告为显式本地开发沙箱提示及依赖弃用提示。
+
+此前 Linux CI 的 `0a63dbc` 运行实际为 1 failed / 202 passed / 2 skipped，失败项是首次 checkpoint 初始化时的取消恢复测试；不能将 Windows 编码修复当作该 CI 失败的原因。真实模型及真实 GitHub PR 实验仍未执行，git 分支推送成功不等于 GitHub 外部副作用恢复验证成功。
+
+修复后的 [GitHub Linux CI](https://github.com/super-ZXQ/incidentpilot/actions/runs/38486301361) 在同一代码提交上通过测试步骤：**204 passed / 4 skipped / 54 warnings，155.71s**。跳过的是两个 Windows 专用回归用例、真实模型用例和未配置只读账号的数据库用例；后者已在上述 Windows 专用 PostgreSQL 环境中通过。CI 的 Ruff、Alembic 和 Docker 镜像构建步骤也均通过。
 
 完整文件清单见 `artifacts/modified-files.json`，相对于基线 SHA 记录全部源码、测试、配置、文档与实验产物。
 

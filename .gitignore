@@ -43,3 +43,6 @@ reference/**/__pycache__/
 .playwright-cli/
 .impeccable/review/
 output/playwright/
+
+# Local assistant notes
+.workbuddy/
