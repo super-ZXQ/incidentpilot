@@ -208,5 +208,9 @@ class GitHubIntegration:
                                      details={"retryable": retryable})
 
 
-def default_github_integration() -> GitHubIntegration:
-    return GitHubIntegration()
+def default_github_integration(settings=None) -> GitHubIntegration:
+    from incidentpilot.config import get_settings
+
+    settings = settings or get_settings()
+    return GitHubIntegration(token=settings.github_token, repo=settings.github_repo,
+                             enabled=settings.github_integration_enabled)

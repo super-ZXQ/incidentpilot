@@ -1,0 +1,803 @@
+{
+  "strategy": "autonomous",
+  "p95_duration_seconds": 0.07159109999975044,
+  "citation_validity_rate": 1.0,
+  "causal_support_rate": null,
+  "evidence_relevance_rate": null,
+  "patch_generation_rate": 0.0,
+  "patch_application_rate": 0.0,
+  "pr_creation_rate": 0.0,
+  "environment": {
+    "timestamp_utc": "2026-10-13T06:05:41.651404+00:00",
+    "python": "3.12.6",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "model": "fake-model-v1",
+    "tool_backend": "fake",
+    "runs_per_case": 1,
+    "temperature": 0.0
+  },
+  "tier": "workflow_fake",
+  "total_cases": 20,
+  "completed": 20,
+  "root_cause_accuracy": 0.0,
+  "fault_category_accuracy": 0.0,
+  "affected_component_accuracy": 1.0,
+  "evidence_support_rate": 1.0,
+  "tool_selection_accuracy": 1.0,
+  "investigation_success_rate": 0.0,
+  "remediation_ready_rate": 0.0,
+  "full_resolution_rate": 0.0,
+  "incident_resolution_rate": 0.0,
+  "patch_test_pass_rate": 0.0,
+  "unsafe_action_rate": 0.0,
+  "average_tool_calls": 4.0,
+  "median_resolution_seconds": 0.06657734999998866,
+  "token_usage": null,
+  "estimated_cost": null,
+  "outcomes": [
+    {
+      "fault_case_id": "fault_001_n_plus_one_orders",
+      "incident_id": "/orders API latency spike",
+      "run_id": "RUN-f9f775639666",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.07159109999975044,
+      "error": null,
+      "details": {
+        "fault_type": "n_plus_one_query",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "patch_target": "reference/orders_api/app.py",
+          "must_pass_tests": true,
+          "notes": "Fix should reduce /orders latency without changing API contract."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_002_slow_database_query",
+      "incident_id": "/orders API latency spike after config change",
+      "run_id": "RUN-71159ead5a5b",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06688000000031025,
+      "error": null,
+      "details": {
+        "fault_type": "slow_database_query",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "patch_target": "reference/orders_api/app.py",
+          "must_pass_tests": true,
+          "notes": "Latency should return to baseline after fix."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_003_null_exception_orders",
+      "incident_id": "/orders API error rate spike",
+      "run_id": "RUN-68cc32fdff15",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.0684226999992461,
+      "error": null,
+      "details": {
+        "fault_type": "null_exception",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "patch_target": "reference/orders_api/app.py",
+          "must_pass_tests": true,
+          "notes": "Error rate should drop after fix."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_004_missing_database_index",
+      "incident_id": "/orders listing slower after schema change",
+      "run_id": "RUN-61f67753a6ab",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06768130000000383,
+      "error": null,
+      "details": {
+        "fault_type": "missing_index",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "patch_target": "reference/orders_api/app.py",
+          "must_pass_tests": true
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_005_dependency_timeout",
+      "incident_id": "/orders P95 spike from slow dependency",
+      "run_id": "RUN-cecc6b4cefc5",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06696980000015174,
+      "error": null,
+      "details": {
+        "fault_type": "dependency_timeout",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "patch_target": "reference/orders_api/app.py",
+          "must_pass_tests": true
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_006_schema_mismatch",
+      "incident_id": "/orders 500 after DTO change",
+      "run_id": "RUN-c4bd5a226a3f",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06745020000016666,
+      "error": null,
+      "details": {
+        "fault_type": "schema_mismatch",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "patch_target": "reference/orders_api/app.py",
+          "must_pass_tests": true
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_007_incorrect_timeout_configuration",
+      "incident_id": "/orders returns incomplete results",
+      "run_id": "RUN-f5171a8ac8df",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06350689999999304,
+      "error": null,
+      "details": {
+        "fault_type": "incorrect_configuration",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "patch_target": "reference/orders_api/app.py",
+          "must_pass_tests": true
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_008_bad_query_refactor",
+      "incident_id": "/orders slower after refactor commit",
+      "run_id": "RUN-da0313d73db8",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.1773844999997891,
+      "error": null,
+      "details": {
+        "fault_type": "bad_query_refactor",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "patch_target": "reference/orders_api/app.py",
+          "must_pass_tests": true
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_009_connection_pool_exhaustion",
+      "incident_id": "Orders listing regression 9",
+      "run_id": "RUN-30358319538e",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06916790000013862,
+      "error": null,
+      "details": {
+        "fault_type": "connection_pool_exhaustion",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_010_cache_failure",
+      "incident_id": "Orders listing regression 10",
+      "run_id": "RUN-4adb29a7bfeb",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06549730000006093,
+      "error": null,
+      "details": {
+        "fault_type": "cache_failure",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_011_bad_code_commit",
+      "incident_id": "Orders listing regression 11",
+      "run_id": "RUN-7a631a9266d8",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06562010000016016,
+      "error": null,
+      "details": {
+        "fault_type": "bad_code_commit",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_012_pagination_off_by_one",
+      "incident_id": "Orders listing regression 12",
+      "run_id": "RUN-7f70f26ee243",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.0677016999998159,
+      "error": null,
+      "details": {
+        "fault_type": "pagination_off_by_one",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_013_duplicate_orders",
+      "incident_id": "Orders listing regression 13",
+      "run_id": "RUN-266eacbaeadf",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06609299999945506,
+      "error": null,
+      "details": {
+        "fault_type": "duplicate_orders",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_014_missing_items",
+      "incident_id": "Orders listing regression 14",
+      "run_id": "RUN-a81a8485d530",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06627469999966706,
+      "error": null,
+      "details": {
+        "fault_type": "missing_items",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_015_wrong_customer",
+      "incident_id": "Orders listing regression 15",
+      "run_id": "RUN-ca36e4d8e61e",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06609639999987849,
+      "error": null,
+      "details": {
+        "fault_type": "wrong_customer",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_016_wrong_total",
+      "incident_id": "Orders listing regression 16",
+      "run_id": "RUN-667c7526c9e3",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06579799999963143,
+      "error": null,
+      "details": {
+        "fault_type": "wrong_total",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_017_reversed_orders",
+      "incident_id": "Orders listing regression 17",
+      "run_id": "RUN-c0e2f84c338a",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06915459999981977,
+      "error": null,
+      "details": {
+        "fault_type": "reversed_orders",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_018_hidden_orders",
+      "incident_id": "Orders listing regression 18",
+      "run_id": "RUN-9087d508499a",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06572999999934837,
+      "error": null,
+      "details": {
+        "fault_type": "hidden_orders",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": true,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_019_invalid_status",
+      "incident_id": "Orders listing regression 19",
+      "run_id": "RUN-a1b142afcdee",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06541319999996631,
+      "error": null,
+      "details": {
+        "fault_type": "invalid_status",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    },
+    {
+      "fault_case_id": "fault_020_inflated_price",
+      "incident_id": "Orders listing regression 20",
+      "run_id": "RUN-4e954b1c2623",
+      "final_status": "INVESTIGATION_COMPLETE",
+      "root_cause_summary": "orders-api degradation is caused by dependency timeout configuration",
+      "evidence_count": 4,
+      "tool_call_count": 4,
+      "root_cause_correct": false,
+      "fault_category_correct": false,
+      "affected_component_correct": true,
+      "evidence_supported": true,
+      "tool_selection_score": 1.0,
+      "patch_test_pass": false,
+      "unsafe_action": false,
+      "duration_seconds": 0.06187260000024253,
+      "error": null,
+      "details": {
+        "fault_type": "inflated_price",
+        "status": "INVESTIGATION_COMPLETE",
+        "expected_fix": {
+          "must_pass_tests": true,
+          "notes": "Reproduce with the fault active and compare response and latency to healthy behavior; healthy-only tests are insufficient."
+        },
+        "citation_valid": true,
+        "causal_facts_match": false,
+        "test_scope": null,
+        "test_executed": false,
+        "token_usage": null,
+        "model": {
+          "provider": "fake",
+          "model": "fake-model-v1"
+        },
+        "patch_generated": false,
+        "patch_applied": false,
+        "pull_request": null
+      }
+    }
+  ],
+  "notes": "Tier=workflow_fake. Ground truth was withheld from Agent context. Token/model cost is reported only when provider usage metadata is available."
+}

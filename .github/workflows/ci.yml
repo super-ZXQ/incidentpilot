@@ -30,11 +30,13 @@ jobs:
       - name: Sync
         run: uv sync --extra dev
       - name: Ruff
-        run: uv run ruff check src tests reference ops_mcp
+        run: uv run ruff check .
       - name: Alembic upgrade
         run: uv run alembic upgrade head
         env:
           DATABASE_URL: postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app
+      - name: Build sandbox for behavioral isolation tests
+        run: docker build -f docker/sandbox.Dockerfile -t incidentpilot-sandbox:py312 .
       - name: Pytest
         run: uv run pytest -q
         env:
@@ -43,4 +45,5 @@ jobs:
           GITHUB_INTEGRATION_ENABLED: "false"
           SANDBOX_ENABLED: "false"
           TOOL_BACKEND: "fake"
+          AUDIT_POSTGRES_URL: postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app
           POSTGRES_TEST_URL: postgresql://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app

@@ -192,3 +192,38 @@ async def test_github_wrong_base_fails_before_writes():
     assert not result.ok
     assert "stale" in result.error
     assert remote.writes == {"refs": 0, "pulls": 0}
+
+
+async def test_github_honors_server_settings_and_never_downgrades_enabled_mode():
+    from incidentpilot.github.integration import default_github_integration
+
+    configured = default_github_integration(Settings(github_integration_enabled=True, github_token="test-only", github_repo="test/repo"))
+    assert configured.enabled is True
+    missing = default_github_integration(Settings(github_integration_enabled=True, github_token="", github_repo=""))
+    result = await missing.acreate_pull_request(run_id="test", title="t", body="b", patch_diff="diff", base_commit_sha="abc")
+    assert not result.ok and result.mode == "real"
+
+
+
+async def test_patch_retries_start_from_base_and_preserve_each_test_exit(db_session, tmp_path, monkeypatch):
+    from sqlalchemy import select
+
+    from incidentpilot.agent.graph import run_agent_workflow
+    from incidentpilot.models.db import TestRun as SandboxTestRecord
+    from incidentpilot.sandbox.manager import hash_patch
+
+    source = tmp_path / "source"
+    (source / "tests").mkdir(parents=True)
+    (source / "app.py").write_bytes(b"VALUE = 0\n")
+    (source / "tests" / "test_regression.py").write_bytes(b"from app import VALUE\ndef test_fixed_value():\n    assert VALUE == 2\n")
+    patches = [json.dumps({"type": "simple_replace", "edits": [{"path": "app.py", "find": "VALUE = 0", "replace": f"VALUE = {number}"}]}) for number in (1, 2)]
+    iterator = iter(patches)
+    monkeypatch.setattr("incidentpilot.sandbox.manager.generate_deterministic_patch", lambda summary: next(iterator))
+    incident, run = await make_run(db_session)
+    settings = Settings(database_url="sqlite+aiosqlite:///test", tool_backend="fake", environment="test", sandbox_enabled=False, reference_repo_path=str(source), max_patch_attempts=2)
+    result = await run_agent_workflow(incident_pk=incident.id, run_id=run.run_id, settings=settings)
+    assert result["status"] == "WAITING_APPROVAL", result.get("error")
+    assert result["patch_artifact"]["patch_hash"] == hash_patch(patches[1])
+    assert [p["test_ok"] for p in result["patch_attempts"]] == [False, True]
+    records = list((await db_session.execute(select(SandboxTestRecord).where(SandboxTestRecord.run_pk == run.id).order_by(SandboxTestRecord.created_at))).scalars())
+    assert [(r.status, r.exit_code) for r in records] == [("FAILED", 1), ("PASSED", 0)]

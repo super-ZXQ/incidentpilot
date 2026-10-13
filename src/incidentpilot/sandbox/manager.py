@@ -77,6 +77,8 @@ def validate_patch_path(repo: Path, raw_path: str) -> Path:
     for part in normalized.split("/"):
         if part.rstrip(" .") != part:
             raise ValueError("unsafe Windows path alias")
+        if part.split(".", 1)[0].upper() in {"CON", "PRN", "AUX", "NUL", "CLOCK$", *{f"COM{i}" for i in range(1, 10)}, *{f"LPT{i}" for i in range(1, 10)}}:
+            raise ValueError("unsafe Windows device path")
         candidate = candidate / part
         if candidate.is_symlink() or candidate.is_junction():
             raise ValueError("symlink patch path forbidden")
@@ -343,8 +345,13 @@ class SandboxManager:
             allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"}
             env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
             env["PYTHONPATH"] = str(repo)
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            env["PYTEST_ADDOPTS"] = "-p no:cacheprovider"
+        before_tests = workspace_snapshot(repo)
         try:
             code, stdout, stderr = await run_process(cmd, cwd=repo, env=env, timeout=timeout)
+            if workspace_snapshot(repo) != before_tests:
+                raise ValueError("test execution changed approved workspace content")
             return SandboxResult(
                 ok=code == 0, exit_code=code, stdout=stdout, stderr=stderr,
                 duration_ms=(time.perf_counter() - started) * 1000,

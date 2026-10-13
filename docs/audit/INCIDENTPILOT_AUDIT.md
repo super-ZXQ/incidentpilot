@@ -1,5 +1,7 @@
 # IncidentPilot 源码审计（修复前）
 
+交付导航：[修复报告](INCIDENTPILOT_FIX_REPORT.md) · [安全报告](INCIDENTPILOT_SECURITY_REPORT.md) · [评测报告](INCIDENTPILOT_EVALUATION.md)。机器可读日志与截图位于 `artifacts/`。
+
 审计日期：2026-10-13。基线：`107d28ad78ad53c8b3e93f44b6768c9a0c83f507`；分支：`codex/security-audit-20261013`。工作树起始为空。审计覆盖 API、ORM、队列、Worker、执行器、LangGraph、审批恢复、GitHub、沙箱、Gateway、MCP server/client、SQL guard、模型决策/provider、评测及现有测试和部署文档。
 
 状态定义：CONFIRMED 为源码及执行/回归确认；SUSPECTED 为仍需实验的风险；NOT_REPRODUCED 为实验未复现；NOT_APPLICABLE 为当前范围不适用。静态发现不等于已成功利用。
@@ -20,7 +22,7 @@
 | A10 / 009 | High / CONFIRMED | `validate_readonly_sql('SELECT * FROM pg_catalog.pg_authid')` 实测通过。server 设置只读事务但不验证 role。 | 系统表/危险函数/复杂查询范围过宽。基于 reference schema 的保守表/字段/函数规则、只读角色核验和 LIMIT。 |
 | A11 / 010 | High / SUSPECTED | decision 原样 json.dumps 事件、证据和源码；无总上下文预算/脱敏/明确数据边界；usage 未累计。 | 注入、泄密、上下文膨胀风险。权限以服务端为准；上下文边界、预算、脱敏和对抗测试。真实模型抗注入效果需真实实验。 |
 | A12 / 011–012 | High / CONFIRMED | scoring 的 evidence_bound 只是 `bool(ids)`；verification 工具失败后仍调用 verify，Fake 可用旧证据判支持。 | 引用存在不等于因果支持；独立验证可能虚假成功。验证当前 run/成功工具/独立内容，分开报告各指标。 |
-| A13 / 012–013 | Medium / CONFIRMED | 只有八个 YAML；无 A/B/C 统一对照；Fake patch 固定移除两个延迟分支，不能证明 null/config 修复。 | 作品集能力被高估。保留历史八例；扩展独立场景与统一实验记录；失败如实保留。 |
+| A13 / 012–013 | Medium / CONFIRMED | 只有八个 YAML；无 A/B/C 统一对照；Fake patch 固定移除两个延迟分支，不能证明 null/config 修复。 | 演示能力被高估。保留历史八例；扩展独立场景与统一实验记录；失败如实保留。 |
 | A14 / 014–015 | Medium / CONFIRMED | 无调查演示页面；现有报告是历史运行，不能作为本次验收。 | 增加轻量同源页面，输出本次机器可读测试/评测和限制。 |
 | A15 | Low / NOT_APPLICABLE | 没有 Redis/Celery/Multi-Agent/RAG，当前任务无需引入。 | 保留单 Agent、PostgreSQL、MCP stdio 架构。 |
 | A16 / 013 | High / CONFIRMED | `run_tests_node_r` 使用 `pytest_regression`，该测试先 reset_fault；即使 null/config 未修复也可通过。 | 新增独立 fault-active oracle，并在评测/页面标明 test_scope，禁止把健康回归解释为真正解决故障。 |
@@ -32,3 +34,30 @@ Windows / PowerShell，Python 与依赖由 `uv` 锁文件提供。`uv run ruff c
 ## 实施顺序与验收
 
 先认证/审批产物/沙箱，再状态机/Worker fencing/外部恢复，再 MCP/SQL/上下文/证据/评测，最后演示和交付。每阶段针对以上复现增加有效回归，再执行全量检查并独立 commit。外部实验不满足条件标 NOT_RUN；Mock 和 Fake 必须标明，不等同于真实修复。
+
+## 最终审计状态
+
+| 发现 | 最终证据状态 | 修复与验证状态 |
+|---|---|---|
+| A01 | CONFIRMED | 认证、角色、资源 owner、可信 actor 已修复；新增数据 API 同样受保护。 |
+| A02 | CONFIRMED | 默认 Docker、受保护环境禁止 host、敏感文件/链接过滤；真实 Docker 行为及取消回收通过。不是通用 DLP 或多租户内核隔离。 |
+| A03 | CONFIRMED | Git 解析、类型拒绝、实际路径比较；新增/删除及异常路径测试通过。 |
+| A04 | CONFIRMED | 产物/hash/base/test/run/actor/time/decision 绑定，ORM 不可变与恢复重验；篡改和审批竞态测试通过。 |
+| A05 | CONFIRMED | 可取消进程、独立 Docker 回收、异步 GitHub HTTP；62 秒心跳及取消探针通过。 |
+| A06 | CONFIRMED | 状态表、终止路由、步数及调用预算恢复，停止后无补丁测试通过。 |
+| A07 | CONFIRMED | owner/attempt/有效租约 fencing、DB 条件写；同 ID 旧 attempt、接管、DB 心跳故障和最终写冲突均有回归。 |
+| A08 | CONFIRMED | Mock HTTP 复现 commit/ref/PR 后崩溃窗口并修复；真实 GitHub 环境 NOT_RUN。 |
+| A09 | CONFIRMED | 工具错误/JSON/空/部分/大小/重试预算修复；真实 stdio MCP 通过。 |
+| A10 | CONFIRMED | 参考 schema、函数/CTE 默认拒绝、LIMIT/timeout、真实只读角色与高权限角色拒绝测试通过。 |
+| A11 | SUSPECTED | 结构化上下文、脱敏、边界、预算与后端权限已落实；真实模型语义注入效果 NOT_RUN，未把静态风险说成成功利用。 |
+| A12 | CONFIRMED | 证据归属/调用/hash/去重/独立观测及引用重验；引用合法率与因果支持分开。后者未独立裁决。 |
+| A13 | CONFIRMED | 原八例 hash 校验保留，新增十二例；A/B/C 离线各二十例；真实模型实验 NOT_RUN。 |
+| A14 | CONFIRMED | 同源轻量 UI、完整报告、机器可读日志和 CI 更新；新 CI 配置尚未在远端 GitHub Actions 执行。 |
+| A15 | NOT_APPLICABLE | 保留既有技术栈，未引入额外队列、RAG 或多 Agent 运行架构。 |
+| A16 | CONFIRMED | fault-active oracle 识别 null/config 未修复；不再把健康回归当故障解决。 |
+
+无记录被标 NOT_REPRODUCED，因为本次没有把未复现的攻击实验冒充已执行。新增审查还修复了多次 PatchAttempt 累积内容与最后 Diff 不一致、各 TestRun 误用最终 exit code，以及 SQLite 内存中断丢失时无意义重试；证据见修复报告及专门回归。
+
+## 最终验收摘要
+
+`ruff check .` 通过；完整 pytest：**204 passed、1 skipped、14 warnings，198.55 秒**。跳过仅真实模型 Key 缺失；警告为 Starlette/AnyIO 弃用和明确的非隔离开发测试提示。单独真实 MCP：1 passed；Docker：5 passed。完整日志、JUnit、依赖和镜像信息位于 `artifacts/`。没有真实 GitHub 写入或实际真人审批实验，三类离线候选有两个失败，均保留。

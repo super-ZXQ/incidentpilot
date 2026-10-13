@@ -14,6 +14,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -44,7 +45,8 @@ class ToolResult:
     error: str | None = None
     latency_ms: float = 0.0
     input: dict[str, Any] = field(default_factory=dict)
-    attempt_count: int = 1
+    attempt_count: int = 0
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     error_category: str | None = None
     trace_id: str = ""
 
@@ -60,6 +62,7 @@ class ToolResult:
             "attempt_count": self.attempt_count,
             "error_category": self.error_category,
             "trace_id": self.trace_id,
+            "created_at": self.created_at,
         }
 
 

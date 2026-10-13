@@ -13,7 +13,7 @@ from incidentpilot.github.integration import GitHubIntegration
 async def test_double_approve_single_pr(client, monkeypatch) -> None:
     github = GitHubIntegration(enabled=False)
     monkeypatch.setattr(
-        "incidentpilot.agent.approval_resume.default_github_integration", lambda: github
+        "incidentpilot.agent.approval_resume.default_github_integration", lambda settings=None: github
     )
     payload = {
         "title": "orders latency idempotency",

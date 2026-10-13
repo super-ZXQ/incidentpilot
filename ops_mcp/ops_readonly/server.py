@@ -76,7 +76,7 @@ def read_metrics(service: str = "orders-api", window: str = "incident") -> dict[
         "window": window,
         "source": "reference_logs_cache",
         **cached,
-        **({"error": http_error} if not cached else {}),
+        "error": http_error,  # Unversioned cached telemetry cannot establish current evidence.
     }
 
 
@@ -282,7 +282,8 @@ def query_database_readonly(query: str = "SELECT 1") -> dict[str, Any]:
                         raise PermissionError("database role has write privileges")
                     cur.execute("SET statement_timeout = '5s'")
                     cur.execute("SET LOCAL lock_timeout = '1s'")
-                    cur.execute("SET LOCAL search_path = public, pg_catalog")
+                    cur.execute("SET LOCAL search_path = pg_catalog, public")
+                    cur.execute("SET LOCAL work_mem = '4MB'")
                     cur.execute(query)
                     if cur.description is None:
                         return {"query": query, "rows": [], "source": "reference_postgres"}

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/demo-assets/favicon.svg" type="image/svg+xml"><title>IncidentPilot · 调查工作台</title><link rel="stylesheet" href="/demo-assets/demo.css"><script src="/demo-assets/demo.js" defer></script></head>
+<body>
+<header><a class="brand" href="/demo">IncidentPilot<span>调查工作台</span></a><span class="subtitle">从证据到人工审批</span></header>
+<main>
+<section class="connect" aria-labelledby="connect-title"><h1 id="connect-title">查看一次完整调查。</h1><p>输入已有 Run ID，追踪证据、验证和补丁。访问凭据仅用于本页请求，刷新页面后清除。</p>
+<form id="connect"><div class="field"><label for="run-id">Run ID</label><input id="run-id" name="run" placeholder="RUN-…" required autocomplete="off" spellcheck="false"></div><div class="field"><label for="token">访问凭据</label><input id="token" name="token" type="password" placeholder="服务端分配的 Bearer Token" required autocomplete="off"></div><button id="load" type="submit">加载调查</button></form><p id="message" role="status" aria-live="polite">尚未加载。可通过 POST /v1/incidents 创建调查，再在此查看。</p></section>
+<div id="workspace" hidden>
+<section class="overview"><div><h2 id="incident-title"></h2><p id="incident-detail"></p><p id="symptom"></p></div><div class="status"><strong id="run-status"></strong><span id="workflow"></span></div></section>
+<div class="modes" id="modes"></div><p id="run-error" role="alert"></p>
+<div class="investigation"><section><h2>调查计划</h2><ol id="plan"></ol><p id="plan-empty">计划尚未生成。</p><h2>假设与验证</h2><div id="hypotheses"></div></section>
+<section><h2>工具调用时间线</h2><p class="hint">调查期间会自动刷新；工具记录在阶段落库后可见。</p><div class="table-scroll"><table><thead><tr><th scope="col">工具 / 时间</th><th scope="col">结果</th><th scope="col">耗时</th></tr></thead><tbody id="calls"></tbody></table></div><p id="calls-empty">尚无已保存的工具调用。</p></section></div>
+<section class="root"><h2>根因结论</h2><p id="root-summary"></p><p id="root-meta" class="hint"></p><p id="root-evidence" class="code"></p></section>
+<section><h2>证据及来源</h2><div id="evidence"></div></section>
+<div class="remediation"><section><h2>补丁产物</h2><p id="artifact-meta" class="code"></p><pre id="diff" tabindex="0"></pre></section><section><h2>沙箱测试</h2><p id="test-scope"></p><div id="tests"></div><h2>人工审批</h2><p id="approval-state"></p><label for="reason">审批说明</label><textarea id="reason" rows="2" placeholder="记录你的审阅依据"></textarea><div class="actions"><button id="approve" disabled>批准此补丁</button><button id="reject" class="secondary" disabled>拒绝此补丁</button></div><p class="hint">批准将恢复工作流。请先核对补丁、测试范围及运行模式。</p><h2>GitHub Pull Request</h2><p id="pr"></p></section></div>
+</div>
+</main><footer>IncidentPilot · 单 Agent / LangGraph / MCP · 测试通过与故障真正解决分别记录。</footer>
+</body></html>

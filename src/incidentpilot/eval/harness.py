@@ -218,6 +218,7 @@ class EvaluationHarness:
                 "citation_valid": structured["evidence_bound"],
                 "causal_facts_match": structured["causal_facts_match"],
                 "test_scope": result.get("test_scope"),
+                "test_executed": result.get("test_status") in {"PASSED", "FAILED"},
                 "token_usage": result.get("token_usage"),
                 "model": result.get("model"),
                 "patch_generated": any(p.patch_diff for p in attempts),
@@ -279,10 +280,7 @@ class EvaluationHarness:
         report.incident_resolution_rate = sum(
             1 for o in outcomes if o.final_status == AgentRunStatus.RESOLVED.value
         ) / len(outcomes)
-        tested = [o for o in outcomes if o.final_status in {
-            AgentRunStatus.WAITING_APPROVAL.value,
-            AgentRunStatus.RESOLVED.value,
-        }]
+        tested = [o for o in outcomes if o.details.get("test_executed")]
         report.patch_test_pass_rate = (
             sum(1 for o in tested if o.patch_test_pass) / len(tested) if tested else 0.0
         )

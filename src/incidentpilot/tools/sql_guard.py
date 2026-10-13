@@ -143,6 +143,13 @@ def validate_readonly_sql(query: str) -> dict[str, Any]:
             raise SQLValidationError(f"forbidden statement node: {type(node).__name__}")
         if node.args.get("into") or node.args.get("locks") or node.args.get("lock"):
             raise SQLValidationError("SELECT INTO or locking SELECT is forbidden")
+        if isinstance(node, exp.Dot) and node.find(exp.Func):
+            raise SQLValidationError("schema-qualified functions are forbidden")
+        if isinstance(node, exp.DataType) and node.this.value not in {
+            "INT", "BIGINT", "SMALLINT", "TEXT", "VARCHAR", "BOOLEAN", "FLOAT", "DOUBLE",
+            "DECIMAL", "TIMESTAMP", "TIMESTAMPTZ", "DATE",
+        }:
+            raise SQLValidationError("cast type is not allowlisted")
         if isinstance(node, exp.Func):
             function = node.name.upper() if isinstance(node, exp.Anonymous) else node.sql_name().upper()
             if function not in ALLOWED_FUNCTIONS:

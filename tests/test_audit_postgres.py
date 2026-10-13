@@ -110,3 +110,83 @@ async def test_takeover_cancels_old_process_without_overwriting_new_owner(audit_
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_database_heartbeat_error_cancels_work_before_retry(audit_database, monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    run, claim = await claimed(audit_database)
+    worker = DurableWorker(audit_database, worker_id="audit-a")
+    marker = tmp_path / "disconnect-pid"
+    async def execute(_):
+        code = "import os,time,pathlib; pathlib.Path(" + repr(str(marker)) + ").write_text(str(os.getpid())); time.sleep(120)"
+        await run_process([sys.executable, "-c", code], timeout=150)
+        pytest.fail("execution survived heartbeat connection failure")
+    monkeypatch.setattr(worker, "_resume_or_execute", execute)
+    monkeypatch.setattr("incidentpilot.worker.renew_lease", AsyncMock(side_effect=ConnectionError("injected DB disconnect")))
+    await asyncio.wait_for(worker._execute_claim(claim), timeout=10)
+    assert marker.exists() and not process_alive(int(marker.read_text()))
+    async with get_session_factory()() as session:
+        current = await RunService(session).get(run.run_id)
+        assert current.status == "PENDING"
+        assert current.failure_category == "ConnectionError"
+
+
+async def test_postgres_checkpoint_rebuilds_sandbox_after_worker_cancellation(audit_database, monkeypatch):
+    from pathlib import Path
+
+    from incidentpilot.agent.graph import run_agent_workflow
+    from incidentpilot.persistence.ownership import current_claim
+    from incidentpilot.sandbox.manager import SandboxManager
+
+    run, claim = await claimed(audit_database)
+    settings = audit_database.model_copy(update={"reference_repo_path": str(Path(__file__).resolve().parents[1] / "reference" / "orders_api")})
+    started = asyncio.Event()
+    original = SandboxManager.run_tests_async
+    async def cancelled_tests(self, *args, **kwargs):
+        started.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(SandboxManager, "run_tests_async", cancelled_tests)
+    token = current_claim.set(claim)
+    task = asyncio.create_task(run_agent_workflow(incident_pk=run.incident_pk, run_id=run.run_id, settings=settings))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=15)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        current_claim.reset(token)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    async with get_session_factory()() as session:
+        await session.execute(update(AgentRun).where(AgentRun.run_id == run.run_id).values(lease_expires_at=utcnow() - timedelta(seconds=1)))
+        await session.commit()
+        second = await claim_next_run(session, worker_id="audit-b", lease_seconds=30, max_attempts=3, run_id=run.run_id)
+    monkeypatch.setattr(SandboxManager, "run_tests_async", original)
+    token = current_claim.set(second)
+    try:
+        result = await run_agent_workflow(incident_pk=run.incident_pk, run_id=run.run_id, settings=settings, recover=True)
+    finally:
+        current_claim.reset(token)
+    assert result["status"] == "WAITING_APPROVAL", result.get("error")
+    assert result["result"]["test_status"] == "PASSED"
+    assert result["patch_artifact"]["base_commit_sha"] == result["patch_attempts"][-1]["base_commit_sha"]
+
+
+
+def test_sql_executes_only_with_dedicated_readonly_role(monkeypatch):
+    from ops_mcp.ops_readonly.server import query_database_readonly
+
+    readonly = os.environ.get("AUDIT_REFERENCE_DB_URL")
+    admin = os.environ.get("AUDIT_REFERENCE_ADMIN_URL")
+    if not readonly or not admin:
+        pytest.skip("dedicated reference audit database URLs not configured")
+    monkeypatch.setenv("REFERENCE_DB_URL", admin)
+    refused = query_database_readonly("SELECT id FROM orders")
+    assert "readonly" in refused.get("error", "")
+    monkeypatch.setenv("REFERENCE_DB_URL", readonly)
+    accepted = query_database_readonly("SELECT id FROM orders")
+    assert not accepted.get("error"), accepted
+    assert accepted["rows"] == [{"id": 1}]
+    for query in ("SELECT name FROM customers", "SELECT * FROM pg_catalog.pg_authid", "DELETE FROM orders"):
+        assert query_database_readonly(query).get("error")

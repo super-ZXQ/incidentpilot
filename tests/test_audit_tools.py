@@ -110,3 +110,17 @@ async def test_comparison_strategies_share_provenance_and_stop_at_investigation(
     assert len(result["tool_calls"]) == 4
     assert result["patch_attempts"] == []
     assert valid_evidence(result["evidence"], result["tool_calls"], run.run_id) == result["evidence"]
+
+
+
+async def test_evaluation_test_pass_rate_includes_failed_candidates(monkeypatch):
+    from pathlib import Path
+
+    from incidentpilot.eval.harness import CaseOutcome, EvaluationHarness
+
+    harness = EvaluationHarness(Path(__file__).resolve().parents[1] / "benchmarks" / "fault_cases")
+    monkeypatch.setattr(harness, "load_cases", lambda: [object(), object()])
+    outcomes = [CaseOutcome("passed", "incident", "one", "WAITING_APPROVAL", patch_test_pass=True, details={"test_executed": True}), CaseOutcome("failed", "incident", "two", "NEEDS_HUMAN_INTERVENTION", patch_test_pass=False, details={"test_executed": True})]
+    monkeypatch.setattr(harness, "run_case", AsyncMock(side_effect=outcomes))
+    report = await harness.run()
+    assert report.patch_test_pass_rate == .5

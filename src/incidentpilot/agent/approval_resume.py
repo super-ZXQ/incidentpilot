@@ -22,7 +22,7 @@ async def resume_after_approval(
     github: GitHubIntegration | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
-    github = github or default_github_integration()
+    github = github or default_github_integration(settings)
 
     factory = get_session_factory()
     async with factory() as session:

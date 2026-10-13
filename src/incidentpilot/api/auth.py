@@ -28,7 +28,7 @@ async def authenticate(request: Request) -> Principal:
     scheme, _, token = request.headers.get("Authorization", "").partition(" ")
     if scheme.lower() == "bearer" and token:
         for configured, identity in request.app.state.settings.api_tokens.items():
-            if secrets.compare_digest(token, configured):
+            if secrets.compare_digest(token.encode("utf-8"), configured.encode("utf-8")):
                 subject, role = identity.get("subject"), identity.get("role")
                 if subject and role in {"initiator", "reviewer", "approver", "admin"}:
                     return Principal(subject, role)
