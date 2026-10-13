@@ -1,0 +1,7 @@
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_initial, initial schema
+INFO  [alembic.runtime.migration] Running upgrade 0001_initial -> 0002_evidence_integrity, add evidence summary and content hash
+INFO  [alembic.runtime.migration] Running upgrade 0002_evidence_integrity -> 0003_approval_idempotency, enforce one approval decision per run
+INFO  [alembic.runtime.migration] Running upgrade 0003_approval_idempotency -> 0004_worker_leases, add worker leases and durable side effects
+INFO  [alembic.runtime.migration] Running upgrade 0004_worker_leases -> 0005_security_bindings, Resource ownership and tested patch bindings.

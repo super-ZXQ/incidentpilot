@@ -1,0 +1,29 @@
+........................................................................ [ 35%]
+........................................................................ [ 70%]
+..............................................s..............            [100%]
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\incidentpilot\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_approval_idempotency.py: 1 warning
+tests/test_audit_postgres.py: 1 warning
+tests/test_audit_reliability.py: 1 warning
+tests/test_phase1_core.py: 1 warning
+tests/test_phase2_gateway.py: 1 warning
+tests/test_phase5_reasoning.py: 1 warning
+tests/test_phase6_sandbox.py: 1 warning
+tests/test_phase7_approval.py: 2 warnings
+tests/test_phase8_eval.py: 1 warning
+tests/test_phase9_e2e.py: 2 warnings
+  D:\incidentpilot\src\incidentpilot\agent\graph.py:948: RuntimeWarning: NON-ISOLATED local sandbox: development/test only
+    result = await manager.run_tests_async(s["run_id"], profile="pytest_fault" if settings.sandbox_fault_type else "pytest_regression", timeout=90)
+
+tests/test_phase6_sandbox.py::test_apply_patch_and_run_pytest
+  C:\Users\26811\AppData\Local\Programs\Python\Python312\Lib\asyncio\events.py:88: RuntimeWarning: NON-ISOLATED local sandbox: development/test only
+    self._context.run(self._callback, *self._args)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+SKIPPED [1] tests\test_real_llm_optional.py:16: LLM_API_KEY not configured
+204 passed, 1 skipped, 14 warnings in 198.55s (0:03:18)

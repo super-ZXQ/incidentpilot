@@ -1,0 +1,19 @@
+{
+  "experiment": "physical PostgreSQL container pause beyond lease",
+  "status": "PASS",
+  "pause_seconds": 12.223675000000185,
+  "lease_seconds": 10,
+  "old_process_exited": true,
+  "replacement_worker": "pause-b",
+  "replacement_attempt": 2,
+  "replacement_status": "RUNNING",
+  "production_services_touched": false,
+  "github_writes": false,
+  "reproduction": [
+    "Use dedicated disposable PostgreSQL and migrated schema",
+    "Claim with lease=10s heartbeat=1s and controlled sleeping subprocess",
+    "docker pause dedicated container; wait 12 seconds; docker unpause",
+    "Claim with second worker; wait for first heartbeat cancellation",
+    "Verify old process exited and new owner/attempt/status remain"
+  ]
+}

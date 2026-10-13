@@ -14,7 +14,7 @@ def redact(value: Any, *, depth=0) -> Any:
     if depth > 12:
         return "[depth limit]"
     if isinstance(value, dict):
-        return {str(k): "[REDACTED]" if SECRET_FIELD.search(str(k)) else redact(v, depth=depth + 1)
+        return {str(k): "[REDACTED]" if SECRET_FIELD.search(str(k)) and str(k) not in {"token_usage", "prompt_tokens", "completion_tokens", "total_tokens"} else redact(v, depth=depth + 1)
                 for k, v in list(value.items())[:200]}
     if isinstance(value, list):
         return [redact(v, depth=depth + 1) for v in value[:200]]

@@ -22,6 +22,7 @@ TOKENS = {role: {"subject": role, "role": role} for role in ("admin", "initiator
     ("GET", "/v1/runs/unknown"), ("GET", "/v1/runs/unknown/evidence"),
     ("GET", "/v1/runs/unknown/tool-calls"), ("GET", "/v1/runs/unknown/patch-artifact"),
     ("POST", "/v1/runs/unknown/approval"), ("GET", "/metrics"),
+    ("GET", "/v1/runtime"), ("GET", "/v1/runs/unknown/tests"), ("GET", "/v1/runs/unknown/approval"),
 ])
 async def test_all_protected_routes_require_identity(db_session, method, path):
     app = create_app(Settings(api_tokens=TOKENS))
@@ -43,6 +44,13 @@ async def test_roles_ownership_and_approval_actor(db_session):
         assert (await client.get(f"/v1/runs/{run_id}", headers={"Authorization": "Bearer initiator"})).status_code == 403
         assert (await client.get(f"/v1/runs/{run_id}", headers={"Authorization": "Bearer reviewer"})).status_code == 200
         assert (await client.post(f"/v1/runs/{run_id}/approval", json={"decision": "APPROVE", "actor": "admin"}, headers={"Authorization": "Bearer initiator"})).status_code == 403
+
+
+async def test_non_ascii_invalid_bearer_is_rejected_without_server_error(db_session):
+    app = create_app(Settings(api_tokens=TOKENS))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/v1/runtime", headers={"Authorization": b"Bearer \xff"})
+    assert response.status_code == 401
 
 
 async def make_artifact(session):
@@ -158,3 +166,20 @@ def test_real_git_diff_changes_match_declared_paths(tmp_path, operation):
             assert (copied / ("new.py" if operation == "create" else "app.py")).read_text() == "y\n"
     finally:
         manager.destroy_workspace("diff")
+
+
+
+async def test_missing_approval_checkpoint_stops_instead_of_retrying(db_session):
+    from incidentpilot.persistence.jobs import ClaimedRun
+    from incidentpilot.services.incidents import RunService
+    from incidentpilot.worker import DurableWorker
+
+    run, _ = await make_artifact(db_session)
+    _, run = await ApprovalService(db_session).decide(run, ApprovalDecision.APPROVE, actor="test-admin", owner_id="missing-checkpoint-test")
+    claim = ClaimedRun(run.incident_pk, run.run_id, run.worker_id, run.attempt_count, True)
+    await DurableWorker(Settings(database_url="sqlite+aiosqlite:///test", tool_backend="fake"), worker_id=claim.worker_id)._execute_claim(claim)
+    current = await RunService(db_session).get(run.run_id)
+    await db_session.refresh(current)
+    assert current.status == "NEEDS_HUMAN_INTERVENTION"
+    assert "checkpoint missing" in current.error
+    assert not current.result.get("pull_request")

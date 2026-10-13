@@ -6,3 +6,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE reference IN SCHEMA public
     GRANT SELECT ON TABLES TO reference_readonly;
 ALTER ROLE reference_readonly SET default_transaction_read_only = on;
 ALTER ROLE reference_readonly SET statement_timeout = '5s';
+ALTER ROLE reference_readonly SET work_mem = '4MB';
+ALTER ROLE reference_readonly SET temp_file_limit = '64MB';
+ALTER ROLE reference_readonly SET idle_in_transaction_session_timeout = '10s';

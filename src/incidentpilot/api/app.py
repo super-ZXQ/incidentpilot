@@ -6,8 +6,11 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +28,7 @@ from incidentpilot.models.schemas import (
     IncidentOut,
     PatchArtifactOut,
     RunOut,
+    TestRunOut,
     ToolCallOut,
 )
 from incidentpilot.observability import metrics as worker_metrics
@@ -53,6 +57,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    if settings.embedded_worker_enabled and settings.environment not in {"development", "test"}:
+        raise ValueError("protected environment requires separate durable workers")
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
@@ -60,6 +66,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     app.state.settings = settings
+    demo = Path(__file__).with_name("static")
+    app.mount("/demo-assets", StaticFiles(directory=demo), name="demo-assets")
+
+    @app.get("/demo", include_in_schema=False)
+    async def investigation_demo():
+        return FileResponse(demo / "demo.html", headers={
+            "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer",
+        })
+
+    @app.get("/v1/runtime")
+    async def runtime(principal: Principal = Depends(authenticate)):
+        return {"model": "real" if settings.llm_enabled and settings.llm_api_key else "fake",
+                "github": "real-enabled" if settings.github_integration_enabled else "mock",
+                "sandbox": "docker" if settings.sandbox_enabled else "local",
+                "role": principal.role}
 
     async def session_dep() -> AsyncIterator[AsyncSession]:
         async for session in get_session():
@@ -144,19 +167,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         principal.access(incident.owner_id)
         return IncidentOut.model_validate(incident)
 
-    async def authorize_run(session: AsyncSession, run, principal: Principal) -> None:
+    async def authorize_run(session: AsyncSession, run, principal: Principal):
         from incidentpilot.models.db import Incident
 
         incident = await session.get(Incident, run.incident_pk)
         principal.access(incident.owner_id if incident else None)
+        return incident
 
     @app.get("/v1/runs/{run_id}", response_model=RunOut)
     async def get_run(run_id: str, session: AsyncSession = Depends(session_dep), principal: Principal = Depends(authenticate)) -> RunOut:
         run = await RunService(session).get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
-        await authorize_run(session, run, principal)
-        return RunOut.model_validate(run)
+        incident = await authorize_run(session, run, principal)
+        return RunOut.model_validate(run).model_copy(update={"incident_id": incident.incident_id})
 
     @app.get("/v1/runs/{run_id}/evidence", response_model=list[EvidenceOut])
     async def list_evidence(
@@ -252,6 +276,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
         return ApprovalOut.model_validate(approval)
+
+    @app.get("/v1/runs/{run_id}/tests", response_model=list[TestRunOut])
+    async def list_tests(run_id: str, session: AsyncSession = Depends(session_dep), principal: Principal = Depends(authenticate)):
+        from sqlalchemy import select
+
+        from incidentpilot.models.db import TestRun
+
+        run = await RunService(session).get(run_id)
+        if run is None:
+            raise HTTPException(404, "run not found")
+        await authorize_run(session, run, principal)
+        return list((await session.execute(select(TestRun).where(TestRun.run_pk == run.id))).scalars())
+
+    @app.get("/v1/runs/{run_id}/approval", response_model=ApprovalOut | None)
+    async def get_approval(run_id: str, session: AsyncSession = Depends(session_dep), principal: Principal = Depends(authenticate)):
+        from sqlalchemy import select
+
+        from incidentpilot.models.db import Approval
+
+        run = await RunService(session).get(run_id)
+        if run is None:
+            raise HTTPException(404, "run not found")
+        await authorize_run(session, run, principal)
+        return await session.scalar(select(Approval).where(Approval.run_pk == run.id))
 
     return app
 

@@ -1,0 +1,27 @@
+{
+  "mode": "local browser verification; synthetic Fake reasoning and Mock GitHub",
+  "run_id": "RUN-c05e31235d16",
+  "status": "RESOLVED",
+  "approval_actor": "demo-reviewer",
+  "approval_binding": {
+    "patch_artifact_id": "PA-2efc285899ab",
+    "patch_hash": "cd66f0fa2fd7bb457f58f35ab5cd051eefc277ea10c8caf83010e9a8d6b5e1d4",
+    "base_commit_sha": "4ddb58b0f3286dfceb85b705a778133d8c78efb4",
+    "test_run_id": "TR-3d78c3fdfda5"
+  },
+  "approval_time": "2026-10-13T05:51:11.909630Z",
+  "pull_request": {
+    "url": "https://example.invalid/mock-repo/pull/1",
+    "number": 1,
+    "branch": "incidentpilot/RUN-c05e31235d16",
+    "mode": "mock"
+  },
+  "viewports": [
+    1440,
+    390
+  ],
+  "mobile_document_width": 390,
+  "mobile_scroll_width": 390,
+  "human_approval": "NOT_RUN; automated UI action with trusted test identity",
+  "review": "ship for product persistence and UTC timestamp fixes only"
+}

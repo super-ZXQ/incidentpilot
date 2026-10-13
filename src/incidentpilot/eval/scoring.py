@@ -22,7 +22,7 @@ CATEGORY_ALIASES = {
 def _category_matches(expected: str, observed: str) -> bool:
     if not expected or not observed:
         return False
-    if expected == observed or expected in observed:
+    if expected == observed:
         return True
     return observed in CATEGORY_ALIASES.get(expected, set())
 

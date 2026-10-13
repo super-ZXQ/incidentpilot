@@ -36,6 +36,7 @@ from incidentpilot.persistence.jobs import (
     retry_claim,
 )
 from incidentpilot.persistence.session import get_session_factory
+from incidentpilot.services.incidents import RunService
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,8 @@ class DurableWorker:
                     )
 
         if self._active:
+            for task in self._active:
+                task.cancel()
             await asyncio.gather(*self._active, return_exceptions=True)
 
     async def _execute_claim(self, claim: ClaimedRun) -> None:
@@ -136,6 +139,16 @@ class DurableWorker:
                 )
         except Exception as exc:
             logger.exception("worker execution failed for %s", claim.run_id)
+            if isinstance(exc, (ValueError, TypeError)):
+                async with factory() as session:
+                    run = await RunService(session).get(claim.run_id)
+                    if run is not None:
+                        await RunService(session).mark_status(
+                            run, AgentRunStatus.NEEDS_HUMAN_INTERVENTION,
+                            workflow_state="NEEDS_HUMAN_INTERVENTION",
+                            error=str(exc)[:2000], finished=True,
+                        )
+                return
             RUN_RETRIES.inc()
             delay = min(30.0, 2.0 ** max(0, claim.attempt_count - 1))
             async with factory() as session:

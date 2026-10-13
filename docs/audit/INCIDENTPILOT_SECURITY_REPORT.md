@@ -21,3 +21,11 @@
 - Docker 与宿主共享内核，不能保证抵御内核漏洞；本项目不声明高强度多租户沙箱。Linux 进程组与 Windows 受控线程都在取消后等待子进程回收；Docker 必须额外 rm -f。
 - healthy-regression-only 通过仅证明健康路径测试通过，不代表故障消失。full_remediation 使用独立、只读挂载的 fault-active oracle；候选源码仍不可信，测试通过不等于形式化证明。
 - 本地预配置 Bearer 凭据适合作品集/单组织演示；需要 TLS 反向代理及服务端密钥管理，尚未接入 OIDC/企业身份目录。没有把客户端字符串当身份的例外路径。
+
+## 最终复验
+
+完整 pytest **204 passed、1 skipped、14 warnings**；其中五个专用 PostgreSQL 审计用例全部实际执行（62 秒心跳、接管取消、数据库心跳错误、checkpoint 沙箱重建、只读角色），原有三项 PostgreSQL 集成也执行。唯一 skip 为真实模型 Key 缺失。真实 MCP 独立 1 passed；Docker 专项 5 passed，包含实际隔离和取消回收。环境/依赖/镜像版本及完整原始输出在 `artifacts/`。
+
+默认 Docker 已开启，测试 fixture 必须显式设置 test + 非隔离模式，避免把宿主执行当默认路径。多候选回归验证不同 TestRun 的 exit code 与最终 Diff，一项候选测试失败不会被上一轮或最终轮的 exit code 覆盖。所有新增 `/v1` 展示接口均纳入 401 检查。
+
+另有实际服务暂停实验：仅暂停本次临时 PostgreSQL 容器 12.22 秒，超过 10 秒租约，再恢复服务；旧进程退出，替换 Worker 的 attempt=2 与 RUNNING 状态保留。区别于 Mock ConnectionError 的单元故障注入，记录在 `artifacts/postgres-pause.json`。未暂停、写入或修改任何生产服务。

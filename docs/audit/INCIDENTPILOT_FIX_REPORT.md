@@ -35,3 +35,44 @@
 - 追加 ORM 产物/审批不可变保护、受保护源码干净 base 校验、checkpoint 沙箱 runtime 丢失时重建并重新测试、PostgreSQL 用 DB 时钟校验租约。
 
 验证：相关安全、工具、证据、状态、恢复和 Docker 回归 **115 passed，3 个预期警告，20.19 秒**；二十例 lifecycle 与 reference 测试 **23 passed，1 个依赖警告，3.66 秒**。专用 PostgreSQL 迁移和原有三项集成通过；新增长测试/接管 **2 passed，64.07 秒**。详细测试含义见安全报告，最终全量结果后补。
+
+## P2 演示与最终工程验收
+
+- `api/static/demo.{html,css,js}` 和 favicon：同源轻量工作台，无框架或外部资源，数据用 textContent 渲染；CSP、凭据只留页面内存；显示完整调查、测试、产物绑定及审批。桌面 1440、手机 390 检查并实际通过测试身份审批，显示明确的 Mock PR。独立 UI 审阅的产品记录和 UTC 时间两个问题均已关闭；未宣称完整 WCAG 审计。机械检测为 parser 缺失的 regex 降级，报告无命中也不当成完整通过。
+- `api/app.py`、`models/schemas.py`、`agent/graph.py`：受保护的 runtime/tests/approval 查询；Run 返回外部 Incident ID，展示假设；节点状态/计划落库；统一 UTC 输出；工具/证据保留实际观测时间。
+- `sandbox/manager.py`、`agent/graph.py`：每次候选回到同一 base；测试前后检查工作区内容；各 TestRun 保存自己的退出码/耗时；checkpoint 重建后的测试重新执行。VALUE=1 失败、VALUE=2 成功的真实子进程回归证实最终 artifact 对应第二个完整候选。
+- `worker.py`：SQLite memory checkpoint 缺失时明确转人工介入；正常停机取消活跃执行并等待清理。`config.py` 默认启用 Docker；只有显式 development/test 非隔离覆盖；受保护环境拒绝 embedded worker。
+- `eval/harness.py`、`eval/scoring.py`：测试失败计入测试通过率分母；根因类别只匹配明确类别/许可别名。`scripts/audit_evaluation.py` 保存 A/B/C、三类 Docker 候选和失败证据，无真实外部写入。
+- `.env.example`、`README.md`、`docs/ARCHITECTURE.md`：更新认证、默认 Docker、迁移、启动 factory、当前能力与历史报告界限。`load/locustfile.py` 添加明确测试凭据；`.github/workflows/ci.yml` 增加 Docker 行为测试镜像及专用 PostgreSQL 审计测试配置。CI 远端运行与 Locust 性能实验仍 NOT_RUN。
+- `infra/reference-db-init.sql`：只读角色的 work_mem/temp_file/idle timeout；server 拒绝无时间归属的旧缓存遥测成为当前证据。实际只读角色查询与 superuser 拒绝已在专用 PostgreSQL 验证。
+- `PRODUCT.md`、`DESIGN.md`、`.impeccable/design.json`、`docs/audit/DEMO_DESIGN.md`：仅记录用户既定产品限制与实际轻量 UI，没有重设计产品或新增运行组件。
+
+### 最终检查与原始材料
+
+| 检查 | 实际结果 | 原始证据 |
+|---|---|---|
+| Ruff 全仓库 | PASS | `artifacts/ruff-final.log` |
+| 完整 pytest（含专用 PG、双 Worker、62 秒进程、恢复、MCP、Docker） | 204 passed / 1 skipped / 14 warnings，198.55s | `artifacts/pytest-final.log`、`pytest-final.xml` |
+| 独立 live MCP stdio | 1 passed，4.21s | `artifacts/mcp-live.log` |
+| Docker 专项 | 5 passed / 200 deselected / 1 依赖警告，10.67s | `artifacts/docker-final.log` |
+| PostgreSQL Alembic | 0001 → 0005 PASS，专用临时容器 | `artifacts/postgres-migration.log` |
+| SQLite Alembic | 0001 → 0005 PASS，临时文件 | `artifacts/sqlite-migration.log` |
+| 实际数据库暂停与接管 | 专用 PostgreSQL 暂停 12.22s > 10s 租约；旧进程退出、新 worker attempt=2 | `artifacts/postgres-pause.json` |
+| 二十例 A/B/C | Fake 各 20/20，根因匹配均 0% | `artifacts/fake-comparison-*.json` |
+| 三类 fault-active 补丁 | 1 PASSED、2 FAILED；无真实 PR/真人审批 | `artifacts/offline-patch-*.json` |
+| 原八例未修改 | 8/8 与基线内容一致 | `artifacts/original-case-hashes.json` |
+| 浏览器审批及响应式 | 可信测试身份 / Mock PR；390px 无横向溢出；UTC 修复 | `artifacts/demo-verification.json`、`demo-desktop.png`、`demo-mobile.png` |
+
+首次完整运行 200 passed 后，对默认隔离、日志时间、独立 TestRun exit code 和评测分母补做修正及回归；最终重新执行全套得出上述 204 passed。开发期间新增测试构造/导入错误已修正，最终没有失败或 xfail 隐藏。CI YAML 更新未冒充远端 CI 成功。
+
+完整文件清单见 `artifacts/modified-files.json`，相对于基线 SHA 记录全部源码、测试、配置、文档与实验产物。
+
+收尾配置核验额外修复：GitHub 工厂明确接收当前 Settings，避免只读进程环境而忽略 `.env` 的启用配置；启用但缺凭据仍返回 real 模式失败，不会降级 Mock。认证凭据按 bytes 比较，非法非 ASCII Bearer 返回 401 而非 TypeError/500。两项均有回归。
+
+### 剩余风险与未执行项
+
+真实模型诊断/抗注入/补丁能力因无 Key 为 NOT_RUN；真实 GitHub crash recovery 因无授权专用仓库为 NOT_RUN；真人审阅为 NOT_RUN。复制过滤不是通用 DLP，必须使用专用经审查源码；Docker 不防御内核级逃逸；预配置身份不是 OIDC/租户隔离。真实 GitHub 还要求 reference repo 根与 remote repo 根、clean base 一致，不能把 monorepo 子目录直接假定成独立仓库。高于已测双 Worker 的并发需先评估 SQLAlchemy pool、checkpoint 连接及 PostgreSQL 容量，未给出扩容或性能提升百分比。graph.py 早期重复 builder/未使用节点保留，未做无关清理。
+
+### 测试资源收尾
+
+本次专用 PostgreSQL 容器已停止并由 `--rm` 移除，沙箱容器列表为空，演示 API 的 8019 端口不再监听。浏览器会话已关闭，截图作为交付产物保留。自动审批审查拒绝删除临时 SQLite 文件，工具只返回 `blocked by policy`；未尝试绕过策略。该文件保留在 `C:\Users\26811\AppData\Local\Temp\incidentpilot-audit-demo-20261013.db`，仅含本次 Fake/Mock 演示数据。

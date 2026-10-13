@@ -33,12 +33,12 @@ class Settings(BaseSettings):
     # LLM
     llm_base_url: str = Field(default="http://127.0.0.1:9/v1")
     llm_provider: Literal["openai-compatible", "fake"] = Field(default="openai-compatible")
-    llm_api_key: str = Field(default="")
+    llm_api_key: str = Field(default="", repr=False)
     llm_model: str = Field(default="gpt-4o-mini")
     llm_enabled: bool = Field(default=False)
 
     # GitHub
-    github_token: str = Field(default="")
+    github_token: str = Field(default="", repr=False)
     github_repo: str = Field(default="")
     github_integration_enabled: bool = Field(default=False)
 
@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     otel_otlp_endpoint: str = Field(default="")
 
     # Sandbox
-    sandbox_enabled: bool = Field(default=False)
+    sandbox_enabled: bool = Field(default=True)
     sandbox_image: str = Field(default="incidentpilot-sandbox:py312")
     sandbox_network: str = Field(default="none")
 

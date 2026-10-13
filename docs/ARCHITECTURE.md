@@ -4,6 +4,20 @@
 
 本轮只定义架构边界与组件职责，不包含 application code、Dockerfile、依赖清单或 SQL schema。
 
+## 2026-10-13 实现与安全边界更新
+
+下文保留原始 V1 设计背景；实现与验收以源码和 `docs/audit/` 为准。本次没有重写架构或引入新服务。
+
+- API 服务端 Bearer 身份、角色与 Incident owner；公开 health/demo 壳，数据与 metrics 需认证。审批可信 actor + artifact ID/hash/base/test/time/decision 快照。
+- `DurableWorker` 的 owner/attempt/DB 时钟租约经 ContextVar 传递，关键数据库写入条件比较且检查 rowcount；同一 run 的 PostgreSQL graph/checkpoint 用 advisory session lock 串行化。心跳失败取消执行，过期 worker 不再落库。
+- 有界异步测试与 GitHub HTTP；Windows Selector loop 使用可取消并等待进程树结束的执行线程，Linux 用 async subprocess/process group；Docker CLI 与容器分别回收。生产/受保护环境强制 Docker，工作目录与根只读、网络 none、非 root、资源限制。
+- 只读观测走 Tool Gateway → MCP；沙箱由受控 graph 节点直接调用 SandboxManager，并由服务端路径/命令/预算/隔离策略治理。没有另一个已实现的通用 Sandbox Gateway Adapter，不把设计图当实现证据。
+- 严格普通文本 Diff（修改/新增/删除），拒绝其他类型；每次补丁尝试回到同一 base，测试前后工作区内容不可变化。审批恢复重验实际成功 TestRun 和不可变产物，GitHub 再核对远端 base/tree/head。
+- ExternalSideEffect 保留，业务幂等键稳定；允许重试远端 content-addressed blob/tree/孤立 commit，远端 branch/PR 先查询后恢复。不是跨 PostgreSQL/GitHub 的原子事务或物理 exactly-once。
+- MCP 结果、SQL、证据/上下文边界详见安全报告。复杂 CTE 和未知 SQL 功能默认拒绝；Prompt Injection 的语义防御效果仍需真实模型实验，机械权限不由提示词授予。
+- SQLite + MemorySaver 只用于测试，重启丢失中断时 fail closed；正式 durable recovery 必须 PostgreSQL。`RESOLVED` 是 PR 工作流完成，未声称合并、部署或故障真正解除。
+- `/demo` 是同源静态轻量页面，复用认证查询/审批 API，无新增前端框架或外部托管。
+
 ## 1. Architecture Goal
 
 IncidentPilot V1 的架构必须服务于以下真实业务链路：

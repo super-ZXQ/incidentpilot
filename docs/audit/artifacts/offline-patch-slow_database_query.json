@@ -1,0 +1,359 @@
+{
+  "fault_case_id": "fault_002_slow_database_query",
+  "fault_type": "slow_database_query",
+  "model_mode": "fake",
+  "tool_mode": "synthetic-fake",
+  "test_mode": "real Docker with fault-active oracle",
+  "approval": {
+    "decision": "APPROVE",
+    "actor": "offline-test-reviewer",
+    "binding": {
+      "patch_artifact_id": "PA-c20607b309a3",
+      "patch_hash": "cd66f0fa2fd7bb457f58f35ab5cd051eefc277ea10c8caf83010e9a8d6b5e1d4",
+      "base_commit_sha": "4ddb58b0f3286dfceb85b705a778133d8c78efb4",
+      "test_run_id": "TR-79e0df736f1c"
+    },
+    "human_approval": "NOT_RUN",
+    "mode": "simulated test decision"
+  },
+  "state": {
+    "run_id": "RUN-f6315e334921",
+    "incident_id": "INC-9113b474d6b4",
+    "incident_title": "/orders API latency spike after config change",
+    "service": "orders-api",
+    "symptom": "P95 latency rose from ~400ms to ~2.1s without matching traffic increase",
+    "environment": "reference-production",
+    "repository": "reference/orders_api",
+    "workflow_state": "WAIT_FOR_APPROVAL",
+    "plan": [
+      "Select the highest-value readonly observation",
+      "Propose an evidence-bound hypothesis",
+      "Collect independent verification evidence",
+      "Conclude only after verification"
+    ],
+    "evidence": [
+      {
+        "evidence_id": "EVID-fc06521cfa7e",
+        "run_id": "RUN-f6315e334921",
+        "source": "read_metrics",
+        "source_type": "metrics",
+        "tool_call_id": "TC-d7d7fdbd3ea0",
+        "timestamp": "2026-10-13T06:05:41.682570+00:00",
+        "content": "{\"error_rate\": 0.07, \"fault_hint\": \"slow_database_query\", \"p95_latency_ms\": 2800, \"service\": \"orders-api\", \"signal\": \"elevated_latency\", \"window\": \"incident\"}",
+        "summary": "read_metrics provides a distinct signal not yet observed",
+        "hash": "336e5f9603daf208387b1d309affbd9238de4238deaba629c409760237089c33",
+        "result": {
+          "service": "orders-api",
+          "window": "incident",
+          "p95_latency_ms": 2800,
+          "error_rate": 0.07,
+          "signal": "elevated_latency",
+          "fault_hint": "slow_database_query"
+        }
+      },
+      {
+        "evidence_id": "EVID-93a8bff4e8bf",
+        "run_id": "RUN-f6315e334921",
+        "source": "read_logs",
+        "source_type": "logs",
+        "tool_call_id": "TC-459df2a57989",
+        "timestamp": "2026-10-13T06:05:41.682570+00:00",
+        "content": "{\"error_count\": 42, \"fault_hint\": \"slow_database_query\", \"service\": \"orders-api\", \"top_errors\": [{\"class\": \"SlowQueryError\", \"count\": 30, \"message\": \"query exceeded 2000ms\"}, {\"class\": \"TimeoutError\", \"count\": 12, \"message\": \"db operation timed out\"}], \"window\": \"incident\"}",
+        "summary": "read_logs provides a distinct signal not yet observed",
+        "hash": "86a4c290dc358dbdf80f193b3148f218f6d52bad6d9f5cc0fa36753f843c36df",
+        "result": {
+          "service": "orders-api",
+          "window": "incident",
+          "error_count": 42,
+          "top_errors": [
+            {
+              "class": "SlowQueryError",
+              "message": "query exceeded 2000ms",
+              "count": 30
+            },
+            {
+              "class": "TimeoutError",
+              "message": "db operation timed out",
+              "count": 12
+            }
+          ],
+          "fault_hint": "slow_database_query"
+        }
+      },
+      {
+        "evidence_id": "EVID-23182f086a76",
+        "run_id": "RUN-f6315e334921",
+        "source": "inspect_git_history",
+        "source_type": "git_history",
+        "tool_call_id": "TC-d7e73f4fd406",
+        "timestamp": "2026-10-13T06:05:41.682570+00:00",
+        "content": "{\"commits\": [{\"author\": \"dev\", \"date\": \"2026-09-15T10:00:00Z\", \"message\": \"Add orders listing endpoint without pagination filter\", \"sha\": \"abc1234\"}], \"fault_hint\": \"slow_database_query\", \"repository\": \"reference/orders_api\"}",
+        "summary": "inspect_git_history provides a distinct signal not yet observed",
+        "hash": "8d14843a190ec9a21c083058dca9e6c5fd30f11fe7e2c586c852318304ee56d9",
+        "result": {
+          "repository": "reference/orders_api",
+          "commits": [
+            {
+              "sha": "abc1234",
+              "message": "Add orders listing endpoint without pagination filter",
+              "author": "dev",
+              "date": "2026-09-15T10:00:00Z"
+            }
+          ],
+          "fault_hint": "slow_database_query"
+        }
+      },
+      {
+        "evidence_id": "EVID-1a2aef6722cd",
+        "run_id": "RUN-f6315e334921",
+        "hash": "cfd7353d8381c4708404b7fe66354b3e7b7f83f1625f800b7c4087dbdc1f1dd5",
+        "timestamp": "2026-10-13T06:05:41.693112+00:00",
+        "source": "read_source_code",
+        "source_type": "verification",
+        "tool_call_id": "TC-4472977a4a2e",
+        "content": "{'repository': 'reference/orders_api', 'path': 'app.py', 'content': 'def list_orders(db):\\n    # N+1: items loaded per order\\n    orders = db.query(Order).all()\\n    return [o.with_items() for o in orders]\\n', 'fault_hint': 'slow_database_query'}",
+        "summary": "inspect implementation independently of telemetry",
+        "result": {
+          "repository": "reference/orders_api",
+          "path": "app.py",
+          "content": "def list_orders(db):\n    # N+1: items loaded per order\n    orders = db.query(Order).all()\n    return [o.with_items() for o in orders]\n",
+          "fault_hint": "slow_database_query"
+        }
+      }
+    ],
+    "hypotheses": [
+      {
+        "statement": "orders-api degradation is caused by dependency timeout configuration",
+        "evidence_ids": [
+          "EVID-fc06521cfa7e",
+          "EVID-93a8bff4e8bf",
+          "EVID-23182f086a76",
+          "EVID-1a2aef6722cd"
+        ],
+        "confidence": "MEDIUM",
+        "status": "VERIFIED",
+        "verified": true,
+        "verification_notes": "independent telemetry/change/source evidence agrees"
+      }
+    ],
+    "root_cause": {
+      "summary": "orders-api degradation is caused by dependency timeout configuration",
+      "statement": "orders-api degradation is caused by dependency timeout configuration",
+      "fault_category": "code_or_database_regression",
+      "affected_component": "orders-api",
+      "causal_facts": [
+        "orders-api degradation is caused by dependency timeout configuration"
+      ],
+      "evidence_ids": [
+        "EVID-fc06521cfa7e",
+        "EVID-93a8bff4e8bf",
+        "EVID-23182f086a76",
+        "EVID-1a2aef6722cd"
+      ],
+      "confidence": "MEDIUM",
+      "verified": true
+    },
+    "tool_calls": [
+      {
+        "tool_call_id": "TC-d7d7fdbd3ea0",
+        "tool_name": "read_metrics",
+        "status": "SUCCEEDED",
+        "output": {
+          "service": "orders-api",
+          "window": "incident",
+          "p95_latency_ms": 2800,
+          "error_rate": 0.07,
+          "signal": "elevated_latency",
+          "fault_hint": "slow_database_query"
+        },
+        "error": null,
+        "latency_ms": 0.07080000068526715,
+        "input": {
+          "service": "orders-api",
+          "window": "incident"
+        },
+        "attempt_count": 1,
+        "error_category": null,
+        "trace_id": "TRACE-cf3b535a406f",
+        "created_at": "2026-10-13T06:05:41.682570+00:00"
+      },
+      {
+        "tool_call_id": "TC-459df2a57989",
+        "tool_name": "read_logs",
+        "status": "SUCCEEDED",
+        "output": {
+          "service": "orders-api",
+          "window": "incident",
+          "error_count": 42,
+          "top_errors": [
+            {
+              "class": "SlowQueryError",
+              "message": "query exceeded 2000ms",
+              "count": 30
+            },
+            {
+              "class": "TimeoutError",
+              "message": "db operation timed out",
+              "count": 12
+            }
+          ],
+          "fault_hint": "slow_database_query"
+        },
+        "error": null,
+        "latency_ms": 0.040099999750964344,
+        "input": {
+          "service": "orders-api",
+          "window": "incident"
+        },
+        "attempt_count": 1,
+        "error_category": null,
+        "trace_id": "TRACE-cf3b535a406f",
+        "created_at": "2026-10-13T06:05:41.682570+00:00"
+      },
+      {
+        "tool_call_id": "TC-d7e73f4fd406",
+        "tool_name": "inspect_git_history",
+        "status": "SUCCEEDED",
+        "output": {
+          "repository": "reference/orders_api",
+          "commits": [
+            {
+              "sha": "abc1234",
+              "message": "Add orders listing endpoint without pagination filter",
+              "author": "dev",
+              "date": "2026-09-15T10:00:00Z"
+            }
+          ],
+          "fault_hint": "slow_database_query"
+        },
+        "error": null,
+        "latency_ms": 0.04859999990003416,
+        "input": {
+          "repository": "reference/orders_api",
+          "limit": 5
+        },
+        "attempt_count": 1,
+        "error_category": null,
+        "trace_id": "TRACE-cf3b535a406f",
+        "created_at": "2026-10-13T06:05:41.682570+00:00"
+      },
+      {
+        "tool_call_id": "TC-4472977a4a2e",
+        "tool_name": "read_source_code",
+        "status": "SUCCEEDED",
+        "output": {
+          "repository": "reference/orders_api",
+          "path": "app.py",
+          "content": "def list_orders(db):\n    # N+1: items loaded per order\n    orders = db.query(Order).all()\n    return [o.with_items() for o in orders]\n",
+          "fault_hint": "slow_database_query"
+        },
+        "error": null,
+        "latency_ms": 0.0749000000723754,
+        "input": {
+          "repository": "reference/orders_api",
+          "path": "app.py"
+        },
+        "attempt_count": 1,
+        "error_category": null,
+        "trace_id": "TRACE-cf3b535a406f",
+        "created_at": "2026-10-13T06:05:41.693112+00:00"
+      }
+    ],
+    "patch_attempts": [
+      {
+        "attempt": 1,
+        "summary": "orders-api degradation is caused by dependency timeout configuration",
+        "patch_diff": "{\n  \"type\": \"simple_replace\",\n  \"reason\": \"orders-api degradation is caused by dependency timeout configuration\",\n  \"edits\": [\n    {\n      \"path\": \"app.py\",\n      \"find\": \"            if ftype in {\\\"n_plus_one_query\\\", \\\"missing_index\\\", \\\"bad_query_refactor\\\", \\\"cache_failure\\\"}:\\n                time.sleep(float(params.get(\\\"per_row_delay\\\", 0.03)))\\n\",\n      \"replace\": \"            # Fixed: remove per-row delay after batching item loads\\n            # (n_plus_one_query / missing_index / bad_query_refactor / cache_failure)\\n\"\n    },\n    {\n      \"path\": \"app.py\",\n      \"find\": \"        if ftype in {\\\"slow_database_query\\\", \\\"dependency_timeout\\\", \\\"connection_pool_exhaustion\\\"}:\\n            time.sleep(float(params.get(\\\"delay_seconds\\\", 0.5)))\\n\",\n      \"replace\": \"        # Fixed: remove injected slow dependency delay\\n\"\n    }\n  ]\n}",
+        "status": "TESTS_PASSED",
+        "generator": "deterministic-test-adapter",
+        "base_commit_sha": "4ddb58b0f3286dfceb85b705a778133d8c78efb4",
+        "test_run_id": "TR-79e0df736f1c",
+        "test_ok": true,
+        "test_exit_code": 0,
+        "test_duration_ms": 1966.1117000005106,
+        "test_mode": "docker",
+        "test_profile": "pytest_fault",
+        "test_stdout": ".                                                                        [100%]\n=============================== warnings summary ===============================\n../usr/local/lib/python3.12/site-packages/starlette/testclient.py:51\n  /usr/local/lib/python3.12/site-packages/starlette/testclient.py:51: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.\n    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n1 passed, 1 warning in 0.89s\n",
+        "test_stderr": ""
+      }
+    ],
+    "patch_artifact": {
+      "patch_artifact_id": "PA-c20607b309a3",
+      "base_commit_sha": "4ddb58b0f3286dfceb85b705a778133d8c78efb4",
+      "patch_diff": "{\n  \"type\": \"simple_replace\",\n  \"reason\": \"orders-api degradation is caused by dependency timeout configuration\",\n  \"edits\": [\n    {\n      \"path\": \"app.py\",\n      \"find\": \"            if ftype in {\\\"n_plus_one_query\\\", \\\"missing_index\\\", \\\"bad_query_refactor\\\", \\\"cache_failure\\\"}:\\n                time.sleep(float(params.get(\\\"per_row_delay\\\", 0.03)))\\n\",\n      \"replace\": \"            # Fixed: remove per-row delay after batching item loads\\n            # (n_plus_one_query / missing_index / bad_query_refactor / cache_failure)\\n\"\n    },\n    {\n      \"path\": \"app.py\",\n      \"find\": \"        if ftype in {\\\"slow_database_query\\\", \\\"dependency_timeout\\\", \\\"connection_pool_exhaustion\\\"}:\\n            time.sleep(float(params.get(\\\"delay_seconds\\\", 0.5)))\\n\",\n      \"replace\": \"        # Fixed: remove injected slow dependency delay\\n\"\n    }\n  ]\n}",
+      "patch_hash": "cd66f0fa2fd7bb457f58f35ab5cd051eefc277ea10c8caf83010e9a8d6b5e1d4",
+      "test_run_id": "TR-79e0df736f1c",
+      "created_at": "2026-10-13T06:05:43.972203+00:00",
+      "immutable": true
+    },
+    "approval_required": true,
+    "status": "WAITING_APPROVAL",
+    "error": null,
+    "result": {
+      "model": {
+        "provider": "fake",
+        "model": "fake-model-v1"
+      },
+      "plan_focus": "Correlate service signals, recent changes, source, and database behavior",
+      "investigation_steps": 4,
+      "sandbox_source": "D:\\incidentpilot\\reference\\orders_api",
+      "test_run_id": "TR-79e0df736f1c",
+      "test_status": "PASSED",
+      "test_mode": "docker",
+      "test_scope": "fault-active",
+      "test_exit_code": 0,
+      "patch_artifact_id": "PA-c20607b309a3",
+      "patch_hash": "cd66f0fa2fd7bb457f58f35ab5cd051eefc277ea10c8caf83010e9a8d6b5e1d4",
+      "token_usage": null
+    },
+    "limits": {
+      "max_investigation_steps": 20,
+      "max_tool_calls": 40,
+      "max_patch_attempts": 1,
+      "run_timeout_seconds": 900
+    },
+    "trace_id": "TRACE-cf3b535a406f",
+    "__interrupt__": [
+      "Interrupt(value={'run_id': 'RUN-f6315e334921', 'patch_artifact': {'patch_artifact_id': 'PA-c20607b309a3', 'base_commit_sha': '4ddb58b0f3286dfceb85b705a778133d8c78efb4', 'patch_diff': '{\\n  \"type\": \"simple_replace\",\\n  \"reason\": \"orders-api degradation is caused by dependency timeout configuration\",\\n  \"edits\": [\\n    {\\n      \"path\": \"app.py\",\\n      \"find\": \"            if ftype in {\\\\\"n_plus_one_query\\\\\", \\\\\"missing_index\\\\\", \\\\\"bad_query_refactor\\\\\", \\\\\"cache_failure\\\\\"}:\\\\n                time.sleep(float(params.get(\\\\\"per_row_delay\\\\\", 0.03)))\\\\n\",\\n      \"replace\": \"            # Fixed: remove per-row delay after batching item loads\\\\n            # (n_plus_one_query / missing_index / bad_query_refactor / cache_failure)\\\\n\"\\n    },\\n    {\\n      \"path\": \"app.py\",\\n      \"find\": \"        if ftype in {\\\\\"slow_database_query\\\\\", \\\\\"dependency_timeout\\\\\", \\\\\"connection_pool_exhaustion\\\\\"}:\\\\n            time.sleep(float(params.get(\\\\\"delay_seconds\\\\\", 0.5)))\\\\n\",\\n      \"replace\": \"        # Fixed: remove injected slow dependency delay\\\\n\"\\n    }\\n  ]\\n}', 'patch_hash': 'cd66f0fa2fd7bb457f58f35ab5cd051eefc277ea10c8caf83010e9a8d6b5e1d4', 'test_run_id': 'TR-79e0df736f1c', 'created_at': '2026-10-13T06:05:43.972203+00:00', 'immutable': True}, 'root_cause': {'summary': 'orders-api degradation is caused by dependency timeout configuration', 'statement': 'orders-api degradation is caused by dependency timeout configuration', 'fault_category': 'code_or_database_regression', 'affected_component': 'orders-api', 'causal_facts': ['orders-api degradation is caused by dependency timeout configuration'], 'evidence_ids': ['EVID-fc06521cfa7e', 'EVID-93a8bff4e8bf', 'EVID-23182f086a76', 'EVID-1a2aef6722cd'], 'confidence': 'MEDIUM', 'verified': True}}, id='f7dc4e91866c41cc8dbbfb0792ce4d5c')"
+    ],
+    "persisted_result": {
+      "model": {
+        "provider": "fake",
+        "model": "fake-model-v1"
+      },
+      "plan_focus": "Correlate service signals, recent changes, source, and database behavior",
+      "investigation_steps": 4,
+      "sandbox_source": "D:\\incidentpilot\\reference\\orders_api",
+      "test_run_id": "TR-79e0df736f1c",
+      "test_status": "PASSED",
+      "test_mode": "docker",
+      "test_scope": "fault-active",
+      "test_exit_code": 0,
+      "patch_artifact_id": "PA-c20607b309a3",
+      "patch_hash": "cd66f0fa2fd7bb457f58f35ab5cd051eefc277ea10c8caf83010e9a8d6b5e1d4",
+      "token_usage": null,
+      "hypotheses": [
+        {
+          "statement": "orders-api degradation is caused by dependency timeout configuration",
+          "evidence_ids": [
+            "EVID-fc06521cfa7e",
+            "EVID-93a8bff4e8bf",
+            "EVID-23182f086a76",
+            "EVID-1a2aef6722cd"
+          ],
+          "confidence": "MEDIUM",
+          "status": "VERIFIED",
+          "verified": true,
+          "verification_notes": "independent telemetry/change/source evidence agrees"
+        }
+      ],
+      "pull_request": {
+        "url": "https://example.invalid/mock-repo/pull/1",
+        "number": 1,
+        "branch": "incidentpilot/RUN-f6315e334921",
+        "mode": "mock"
+      }
+    },
+    "persisted_status": "RESOLVED"
+  }
+}

@@ -210,6 +210,7 @@ async def run_agent_workflow(
                     attempt_count=item.get("attempt_count", 1),
                     error_category=item.get("error_category"),
                     trace_id=item.get("trace_id", run.trace_id),
+                    created_at=datetime.fromisoformat(item["created_at"]) if item.get("created_at") else repo.utcnow(),
                 )
             )
         existing_evidence_ids = set(
@@ -232,6 +233,7 @@ async def run_agent_workflow(
                     summary=item.get("summary", ""),
                     content_hash=item.get("hash", ""),
                     result=item.get("result") or {},
+                    timestamp=datetime.fromisoformat(item["timestamp"]) if item.get("timestamp") else repo.utcnow(),
                 )
             )
         for item in final_state.get("hypotheses") or []:
@@ -265,10 +267,11 @@ async def run_agent_workflow(
                         test_run_id=item["test_run_id"],
                         run_pk=run.id,
                         status="PASSED" if item.get("test_ok") else "FAILED",
-                        exit_code=(final_state.get("result") or {}).get("test_exit_code"),
+                        exit_code=item.get("test_exit_code"),
+                        duration_ms=item.get("test_duration_ms"),
                         stdout=item.get("test_stdout", ""),
                         stderr=item.get("test_stderr", ""),
-                        command="pytest_regression",
+                        command=item.get("test_profile", "pytest_regression"),
                         patch_hash=hash_patch(patch_diff),
                         base_commit_sha=item.get("base_commit_sha", ""),
                         mode=item.get("test_mode", "unknown"),
@@ -284,7 +287,7 @@ async def run_agent_workflow(
             status,
             workflow_state=final_state.get("workflow_state", WorkflowState.FAILED.value),
             error=final_state.get("error"),
-            result=final_state.get("result") or {},
+            result={**(final_state.get("result") or {}), "hypotheses": final_state.get("hypotheses") or []},
             root_cause=final_state.get("root_cause"),
             finished=status
             in {
@@ -557,6 +560,7 @@ async def _run_with_langgraph(
                     "evidence_id": repo.new_id("EVID"),
                     "run_id": s["run_id"],
                     "hash": content_hash(source["output"]),
+                    "timestamp": _utcnow(),
                     "source": selection.tool_name,
                     "source_type": "verification",
                     "tool_call_id": source["tool_call_id"],
@@ -687,8 +691,11 @@ async def _run_with_langgraph(
                 {
                     "test_run_id": test_run_id,
                     "test_ok": result.ok,
+                    "test_exit_code": result.exit_code,
+                    "test_duration_ms": result.duration_ms,
                     "base_commit_sha": manager.base_commit_sha(s["run_id"]),
                     "test_mode": result.mode,
+                    "test_profile": "pytest_fault" if settings.sandbox_fault_type else "pytest_regression",
                     "test_stdout": result.stdout[-4000:],
                     "test_stderr": result.stderr[-2000:],
                     "status": (
@@ -744,6 +751,7 @@ async def _run_with_langgraph(
         s["patch_artifact"] = artifact.to_dict()
 
         artifact.patch_artifact_id = await _persist_patch_artifact_once(s["run_id"], artifact)
+        s["patch_artifact"] = artifact.to_dict()
         manager.destroy_workspace(s["run_id"])
         s["workflow_state"] = WorkflowState.WAIT_FOR_APPROVAL.value
         s["status"] = AgentRunStatus.WAITING_APPROVAL.value
@@ -879,7 +887,14 @@ async def _run_with_langgraph(
         from incidentpilot.sandbox.manager import generate_deterministic_patch
 
         s["workflow_state"] = WorkflowState.GENERATE_PATCH.value
+        if s.get("patch_attempts"):
+            old = (runtime.pop(s["run_id"], {}) or {}).get("manager")
+            if old is not None:
+                old.destroy_workspace(s["run_id"])
         manager = await ensure_workspace(s)
+        if (manager is not None and s.get("patch_attempts")
+                and s["patch_attempts"][0].get("base_commit_sha") != manager.base_commit_sha(s["run_id"])):
+            raise ValueError("base changed between patch attempts")
         if manager is None:
             s["status"] = AgentRunStatus.FAILED.value
             s["error"] = "sandbox manager missing"
@@ -941,8 +956,11 @@ async def _run_with_langgraph(
                 {
                     "test_run_id": test_run_id,
                     "test_ok": result.ok,
+                    "test_exit_code": result.exit_code,
+                    "test_duration_ms": result.duration_ms,
                     "base_commit_sha": manager.base_commit_sha(s["run_id"]),
                     "test_mode": result.mode,
+                    "test_profile": "pytest_fault" if settings.sandbox_fault_type else "pytest_regression",
                     "test_stdout": result.stdout[-4000:],
                     "test_stderr": result.stderr[-2000:],
                     "status": (
@@ -999,6 +1017,7 @@ async def _run_with_langgraph(
         s["patch_artifact"] = artifact.to_dict()
 
         artifact.patch_artifact_id = await _persist_patch_artifact_once(s["run_id"], artifact)
+        s["patch_artifact"] = artifact.to_dict()
         manager.destroy_workspace(s["run_id"])
         s["workflow_state"] = WorkflowState.WAIT_FOR_APPROVAL.value
         s["status"] = AgentRunStatus.WAITING_APPROVAL.value
@@ -1051,7 +1070,16 @@ async def _run_with_langgraph(
             outcome = await node(s)
             if not approval:
                 async with get_session_factory()() as guard_session:
+                    from sqlalchemy import update
+
+                    from incidentpilot.models.db import AgentRun
+
                     await fence(guard_session, s["run_id"])
+                    await guard_session.execute(update(AgentRun).where(AgentRun.run_id == s["run_id"]).values(
+                        workflow_state=outcome.get("workflow_state", "PLAN"),
+                        plan=outcome.get("plan") or [],
+                        tool_call_count=len(outcome.get("tool_calls") or []),
+                    ))
                     await guard_session.commit()
             return outcome
         return invoke
@@ -1127,6 +1155,8 @@ async def _run_with_langgraph(
             checkpoint_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://")
             async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
                 await checkpointer.setup()
+                if resume_value is not None and await checkpointer.aget_tuple(config) is None:
+                    raise ValueError("approval checkpoint missing; automatic resume denied")
                 if recover and resume_value is None:
                     checkpoint = await checkpointer.aget_tuple(config)
                     if checkpoint is None:
@@ -1138,6 +1168,8 @@ async def _run_with_langgraph(
             global _TEST_CHECKPOINTER
             if _TEST_CHECKPOINTER is None:
                 _TEST_CHECKPOINTER = MemorySaver()
+            if resume_value is not None and await _TEST_CHECKPOINTER.aget_tuple(config) is None:
+                raise ValueError("approval checkpoint missing; SQLite memory checkpoints do not survive restart")
             if recover and resume_value is None:
                 checkpoint = await _TEST_CHECKPOINTER.aget_tuple(config)
                 if checkpoint is None:

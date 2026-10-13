@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 from incidentpilot.models.enums import (
     AgentRunStatus,
@@ -15,7 +15,16 @@ from incidentpilot.models.enums import (
 )
 
 
-class IncidentCreate(BaseModel):
+class APIModel(BaseModel):
+    @field_serializer("*", mode="wrap")
+    def serialize_utc(self, value, handler):
+        # SQLite test storage drops tzinfo; persisted timestamps are UTC.
+        if isinstance(value, datetime) and value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return handler(value)
+
+
+class IncidentCreate(APIModel):
     incident_id: str | None = Field(default=None)
     title: str
     service: str
@@ -27,7 +36,7 @@ class IncidentCreate(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class IncidentOut(BaseModel):
+class IncidentOut(APIModel):
     id: str
     incident_id: str
     title: str
@@ -44,10 +53,11 @@ class IncidentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class RunOut(BaseModel):
+class RunOut(APIModel):
     id: str
     run_id: str
     incident_pk: str
+    incident_id: str = ""
     status: str
     workflow_state: str
     plan: list[str] = Field(default_factory=list)
@@ -64,14 +74,14 @@ class RunOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class CreateRunAccepted(BaseModel):
+class CreateRunAccepted(APIModel):
     incident_id: str
     run_id: str
     status: AgentRunStatus
     workflow_state: str = WorkflowState.INCIDENT_RECEIVED.value
 
 
-class EvidenceOut(BaseModel):
+class EvidenceOut(APIModel):
     evidence_id: str
     source: str
     source_type: str
@@ -85,7 +95,7 @@ class EvidenceOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ToolCallOut(BaseModel):
+class ToolCallOut(APIModel):
     tool_call_id: str
     tool_name: str
     input: dict[str, Any] = Field(default_factory=dict)
@@ -101,7 +111,7 @@ class ToolCallOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class PatchArtifactOut(BaseModel):
+class PatchArtifactOut(APIModel):
     patch_artifact_id: str
     base_commit_sha: str
     patch_diff: str
@@ -113,7 +123,7 @@ class PatchArtifactOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ApprovalRequest(BaseModel):
+class ApprovalRequest(APIModel):
     decision: ApprovalDecision
     actor: str | None = None  # Legacy input accepted but never trusted.
     patch_artifact_id: str | None = None
@@ -121,20 +131,33 @@ class ApprovalRequest(BaseModel):
     reason: str = ""
 
 
-class ApprovalOut(BaseModel):
+class ApprovalOut(APIModel):
     id: str
     run_pk: str
     patch_artifact_id: str | None = None
     decision: str | None = None
     actor: str
     reason: str
+    payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     decided_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
 
-class HealthOut(BaseModel):
+class TestRunOut(APIModel):
+    test_run_id: str
+    status: str
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    mode: str
+    patch_hash: str
+    base_commit_sha: str
+    model_config = {"from_attributes": True}
+
+
+class HealthOut(APIModel):
     status: str = "ok"
     app: str
     environment: str

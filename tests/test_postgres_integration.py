@@ -51,6 +51,7 @@ async def test_two_postgres_workers_claim_one_run() -> None:
                 worker_id=worker_id,
                 lease_seconds=30,
                 max_attempts=3,
+                run_id=expected.run_id,
             )
 
     claims = await asyncio.gather(claim("pg-worker-a"), claim("pg-worker-b"))

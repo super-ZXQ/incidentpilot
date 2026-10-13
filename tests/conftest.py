@@ -25,6 +25,15 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def explicit_test_execution(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("SANDBOX_ENABLED", "false")
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
+
+
 def pytest_asyncio_loop_factories(config, item):
     del config, item
     if sys.platform == "win32":
