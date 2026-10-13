@@ -240,12 +240,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # Resume the persisted LangGraph interrupt. GitHub is invoked by the
         # resumed graph node, never directly by this API route.
         from incidentpilot.agent.graph import resume_agent_workflow
+        if run.worker_id:
+            from incidentpilot.persistence.jobs import ClaimedRun
+            from incidentpilot.worker import DurableWorker
 
-        await resume_agent_workflow(
-            run_id=run.run_id,
-            decision=body.decision.value,
-            settings=settings,
-        )
+            await DurableWorker(settings, worker_id=run.worker_id)._execute_claim(
+                ClaimedRun(run.incident_pk, run.run_id, run.worker_id, run.attempt_count, True)
+            )
+        else:
+            await resume_agent_workflow(run_id=run.run_id, decision=body.decision.value, settings=settings)
+
 
         return ApprovalOut.model_validate(approval)
 

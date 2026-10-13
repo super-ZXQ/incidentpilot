@@ -35,6 +35,9 @@ async def _persist_patch_artifact_once(run_id: str, artifact: Any) -> str:
         ).scalar_one_or_none()
         if run is None:
             return artifact.patch_artifact_id
+        from incidentpilot.persistence.ownership import fence
+
+        await fence(session, run_id)
         existing = (
             await session.execute(
                 select(PatchArtifact).where(
@@ -179,6 +182,9 @@ async def run_agent_workflow(
 
         status = AgentRunStatus(final_state.get("status", AgentRunStatus.FAILED.value))
 
+        from incidentpilot.persistence.ownership import fence
+
+        await fence(session, run_id)
         # Persist investigation artifacts BEFORE marking terminal status so
         # API consumers never observe a finished run without evidence/tool calls.
         existing_tool_ids = set(
@@ -239,6 +245,7 @@ async def run_agent_workflow(
                     verification_notes=item.get("verification_notes", ""),
                 )
             )
+        existing_test_ids = set((await session.execute(select(TestRun.test_run_id).where(TestRun.run_pk == run.id))).scalars())
         for item in final_state.get("patch_attempts") or []:
             patch_diff = item.get("patch_diff", "")
             session.add(
@@ -251,7 +258,7 @@ async def run_agent_workflow(
                     notes=item.get("reflection", ""),
                 )
             )
-            if item.get("test_run_id"):
+            if item.get("test_run_id") and item["test_run_id"] not in existing_test_ids:
                 session.add(
                     TestRun(
                         test_run_id=item["test_run_id"],
@@ -305,8 +312,15 @@ async def _execute_graph(
     recover: bool = False,
 ) -> AgentState:
     try:
-        return await _run_with_langgraph(state, settings, gateway, recover=recover)
+        from incidentpilot.persistence.ownership import workflow_lock
+
+        async with workflow_lock(state["run_id"], settings):
+            return await _run_with_langgraph(state, settings, gateway, recover=recover)
     except Exception as exc:
+        from incidentpilot.persistence.ownership import LostLeaseError
+
+        if isinstance(exc, LostLeaseError):
+            raise
         logger.exception("LangGraph execution failed")
         return {
             **state,
@@ -447,6 +461,10 @@ async def _run_with_langgraph(
 
         s["tool_calls"] = tool_calls
         s["evidence"] = evidence
+        s["result"] = {**(s.get("result") or {}), "investigation_steps": gateway.budget.step_count}
+        if not gateway.budget.can_step() and s.get("status") == "RUNNING":
+            s["status"] = AgentRunStatus.NEEDS_HUMAN_INTERVENTION.value
+            s["workflow_state"] = WorkflowState.NEEDS_HUMAN_INTERVENTION.value
         if not evidence:
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
@@ -455,7 +473,7 @@ async def _run_with_langgraph(
 
     async def form_hypothesis_node(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.FORM_HYPOTHESIS.value
-        if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
+        if s.get("status") != AgentRunStatus.RUNNING.value:
             return s
         evidence = s.get("evidence") or []
         if len(evidence) < 2:
@@ -477,7 +495,7 @@ async def _run_with_langgraph(
 
     async def verify_hypothesis_node(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.VERIFY_HYPOTHESIS.value
-        if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
+        if s.get("status") != AgentRunStatus.RUNNING.value:
             return s
         if not s.get("hypotheses"):
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
@@ -694,11 +712,13 @@ async def _run_with_langgraph(
         return s
 
     def route_after_collect(s: AgentState) -> str:
-        if s.get("status") == AgentRunStatus.INSUFFICIENT_EVIDENCE.value:
+        if s.get("status") != AgentRunStatus.RUNNING.value:
             return "end"
         return "form_hypothesis"
 
     def route_after_verify(s: AgentState) -> str:
+        if s.get("status") != AgentRunStatus.RUNNING.value:
+            return "end"
         if s.get("root_cause"):
             if s.get("status") == AgentRunStatus.INVESTIGATION_COMPLETE.value:
                 return "end"
@@ -739,11 +759,11 @@ async def _run_with_langgraph(
             "end": END,
         },
     )
-    builder.add_edge("create_sandbox", "generate_patch")
+    builder.add_conditional_edges("create_sandbox", lambda s: "generate_patch" if s.get("status") == "RUNNING" else "end", {"generate_patch": "generate_patch", "end": END})
     builder.add_conditional_edges(
         "generate_patch",
         lambda s: "run_tests"
-        if s.get("patch_attempts") and s["patch_attempts"][-1].get("status") == "applied"
+        if s.get("status") == "RUNNING" and s.get("patch_attempts") and s["patch_attempts"][-1].get("status") == "applied"
         else "needs_human",
         {"run_tests": "run_tests", "needs_human": "needs_human"},
     )
@@ -751,6 +771,7 @@ async def _run_with_langgraph(
         "run_tests",
         route_after_tests,
         {
+            "end": END,
             "export_patch_artifact": "export_patch_artifact",
             "reflect": "reflect",
             "needs_human": "needs_human",
@@ -878,6 +899,8 @@ async def _run_with_langgraph(
         return s
 
     def route_after_tests_r(s: AgentState) -> str:
+        if s.get("status") != AgentRunStatus.RUNNING.value:
+            return "end"
         if runtime.get(s["run_id"], {}).get("test_ok"):
             return "export_patch_artifact"
         if len(s.get("patch_attempts") or []) < settings.max_patch_attempts:
@@ -941,18 +964,37 @@ async def _run_with_langgraph(
         )
         return s
 
+    def guarded(node, *, approval=False):
+        async def invoke(s: AgentState):
+            from incidentpilot.persistence.ownership import fence
+
+            if not approval and s.get("status") not in {None, "RUNNING"}:
+                return s
+            async with get_session_factory()() as guard_session:
+                await fence(guard_session, s["run_id"])
+                await guard_session.commit()
+            gateway.budget.tool_call_count = max(gateway.budget.tool_call_count, len(s.get("tool_calls") or []))
+            gateway.budget.step_count = max(gateway.budget.step_count, (s.get("result") or {}).get("investigation_steps", 0))
+            outcome = await node(s)
+            if not approval:
+                async with get_session_factory()() as guard_session:
+                    await fence(guard_session, s["run_id"])
+                    await guard_session.commit()
+            return outcome
+        return invoke
+
     builder = StateGraph(AgentState)
-    builder.add_node("plan", plan_node)
-    builder.add_node("collect_evidence", collect_evidence_node)
-    builder.add_node("form_hypothesis", form_hypothesis_node)
-    builder.add_node("verify_hypothesis", verify_hypothesis_node)
-    builder.add_node("create_sandbox", create_sandbox_node_r)
-    builder.add_node("generate_patch", generate_patch_node_r)
-    builder.add_node("run_tests", run_tests_node_r)
-    builder.add_node("reflect", reflect_node)
-    builder.add_node("export_patch_artifact", export_artifact_node_r)
-    builder.add_node("wait_for_approval", wait_for_approval_node)
-    builder.add_node("needs_human", needs_human_node)
+    builder.add_node("plan", guarded(plan_node))
+    builder.add_node("collect_evidence", guarded(collect_evidence_node))
+    builder.add_node("form_hypothesis", guarded(form_hypothesis_node))
+    builder.add_node("verify_hypothesis", guarded(verify_hypothesis_node))
+    builder.add_node("create_sandbox", guarded(create_sandbox_node_r))
+    builder.add_node("generate_patch", guarded(generate_patch_node_r))
+    builder.add_node("run_tests", guarded(run_tests_node_r))
+    builder.add_node("reflect", guarded(reflect_node))
+    builder.add_node("export_patch_artifact", guarded(export_artifact_node_r))
+    builder.add_node("wait_for_approval", guarded(wait_for_approval_node, approval=True))
+    builder.add_node("needs_human", guarded(needs_human_node))
 
     builder.add_edge(START, "plan")
     builder.add_edge("plan", "collect_evidence")
@@ -971,11 +1013,11 @@ async def _run_with_langgraph(
             "end": END,
         },
     )
-    builder.add_edge("create_sandbox", "generate_patch")
+    builder.add_conditional_edges("create_sandbox", lambda s: "generate_patch" if s.get("status") == "RUNNING" else "end", {"generate_patch": "generate_patch", "end": END})
     builder.add_conditional_edges(
         "generate_patch",
         lambda s: "run_tests"
-        if s.get("patch_attempts") and s["patch_attempts"][-1].get("status") == "applied"
+        if s.get("status") == "RUNNING" and s.get("patch_attempts") and s["patch_attempts"][-1].get("status") == "applied"
         else "needs_human",
         {"run_tests": "run_tests", "needs_human": "needs_human"},
     )
@@ -983,6 +1025,7 @@ async def _run_with_langgraph(
         "run_tests",
         route_after_tests_r,
         {
+            "end": END,
             "export_patch_artifact": "export_patch_artifact",
             "reflect": "reflect",
             "needs_human": "needs_human",
@@ -1004,29 +1047,33 @@ async def _run_with_langgraph(
         from langgraph.types import Command
 
         invoke_input = Command(resume=resume_value)
-    if settings.database_url.startswith("postgresql"):
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-        checkpoint_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://")
-        async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
-            await checkpointer.setup()
+    try:
+        if settings.database_url.startswith("postgresql"):
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    
+            checkpoint_url = settings.database_url.replace("postgresql+psycopg://", "postgresql://")
+            async with AsyncPostgresSaver.from_conn_string(checkpoint_url) as checkpointer:
+                await checkpointer.setup()
+                if recover and resume_value is None:
+                    checkpoint = await checkpointer.aget_tuple(config)
+                    if checkpoint is None:
+                        invoke_input = dict(state)
+                graph = builder.compile(checkpointer=checkpointer)
+                result = await graph.ainvoke(invoke_input, config=config)
+        else:
+            # Explicit test-only path; formal runtime uses PostgreSQL checkpoints.
+            global _TEST_CHECKPOINTER
+            if _TEST_CHECKPOINTER is None:
+                _TEST_CHECKPOINTER = MemorySaver()
             if recover and resume_value is None:
-                checkpoint = await checkpointer.aget_tuple(config)
+                checkpoint = await _TEST_CHECKPOINTER.aget_tuple(config)
                 if checkpoint is None:
                     invoke_input = dict(state)
-            graph = builder.compile(checkpointer=checkpointer)
+            graph = builder.compile(checkpointer=_TEST_CHECKPOINTER)
             result = await graph.ainvoke(invoke_input, config=config)
-    else:
-        # Explicit test-only path; formal runtime uses PostgreSQL checkpoints.
-        global _TEST_CHECKPOINTER
-        if _TEST_CHECKPOINTER is None:
-            _TEST_CHECKPOINTER = MemorySaver()
-        if recover and resume_value is None:
-            checkpoint = await _TEST_CHECKPOINTER.aget_tuple(config)
-            if checkpoint is None:
-                invoke_input = dict(state)
-        graph = builder.compile(checkpointer=_TEST_CHECKPOINTER)
-        result = await graph.ainvoke(invoke_input, config=config)
+    finally:
+        for handles in runtime.values():
+            handles["manager"].destroy_workspace(state["run_id"])
     return dict(result)
 
 
@@ -1060,9 +1107,10 @@ async def resume_agent_workflow(
     if hasattr(adapter, "connect"):
         await adapter.connect()
     try:
-        return await _run_with_langgraph(
-            state, settings, gateway, resume_value=decision
-        )
+        from incidentpilot.persistence.ownership import workflow_lock
+
+        async with workflow_lock(run_id, settings):
+            return await _run_with_langgraph(state, settings, gateway, resume_value=decision)
     finally:
         if hasattr(adapter, "disconnect"):
             await adapter.disconnect()

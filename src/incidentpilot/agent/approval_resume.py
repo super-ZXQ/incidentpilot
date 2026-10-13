@@ -68,6 +68,9 @@ async def resume_after_approval(
             .with_for_update()
         )
         effect = effect_result.scalar_one_or_none()
+        from incidentpilot.persistence.ownership import fence
+
+        await fence(session, run_id)
         if effect is not None and effect.status == "COMPLETED":
             from incidentpilot.observability.metrics import DUPLICATE_SIDE_EFFECTS
 
@@ -95,7 +98,16 @@ async def resume_after_approval(
             effect.attempt_count += 1
         await session.commit()
 
-        pr = github.create_pull_request(
+        from incidentpilot.persistence.ownership import fence
+
+        await fence(session, run_id)
+        await session.commit()
+        async def authorize():
+            async with factory() as auth_session:
+                await fence(auth_session, run_id)
+                await auth_session.commit()
+
+        pr = await github.acreate_pull_request(
             run_id=run.run_id,
             title=f"IncidentPilot fix for {run.run_id}",
             body=(
@@ -107,11 +119,15 @@ async def resume_after_approval(
             patch_diff=artifact.patch_diff,
             base_commit_sha=artifact.base_commit_sha,
             idempotency_key=idempotency_key,
+            authorize=authorize,
         )
+        await fence(session, run_id)
         if not pr.ok:
             effect.status = "FAILED"
             effect.error = pr.error or "github pr failed"
             await session.commit()
+            if pr.details.get("retryable"):
+                raise ConnectionError("transient GitHub failure; remote reconciliation required")
             await service.mark_status(
                 run,
                 AgentRunStatus.FAILED,

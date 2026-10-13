@@ -61,7 +61,7 @@ async def test_approval_binding_and_trusted_actor(db_session):
     app = create_app(Settings(api_tokens=TOKENS))
     # Only inspect persisted decision; graph resume is separately covered.
     from unittest.mock import AsyncMock, patch
-    with patch("incidentpilot.agent.graph.resume_agent_workflow", new=AsyncMock()):
+    with patch("incidentpilot.agent.graph.resume_agent_workflow", new=AsyncMock(return_value={"status": "RUNNING"})):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post(f"/v1/runs/{run.run_id}/approval", headers={"Authorization": "Bearer admin"}, json={"decision": "APPROVE", "actor": "forged"})
     assert response.status_code == 200
@@ -132,7 +132,7 @@ def test_special_patch_paths_rejected(tmp_path, path):
 def test_real_git_diff_changes_match_declared_paths(tmp_path, operation):
     source = tmp_path / "source"
     source.mkdir()
-    (source / "app.py").write_text("x\n")
+    (source / "app.py").write_bytes(b"x\n")
     headers = {"modify": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-x\n+y\n", "create": "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+y\n", "delete": "--- a/app.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"}
     manager = SandboxManager()
     try:

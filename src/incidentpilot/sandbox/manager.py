@@ -114,7 +114,7 @@ def patch_paths(repo: Path, patch_diff: str) -> set[str]:
         if line.startswith("index ") and len(line.split()) > 2 and line.split()[-1] != "100644":
             raise ValueError("unsupported index mode")
     parsed = subprocess.run(
-        ["git", "apply", "--numstat", "-z", "-"], input=patch_diff.encode("utf-8"),
+        ["git", "-c", "core.autocrlf=false", "apply", "--numstat", "-z", "-"], input=patch_diff.encode("utf-8"),
         cwd=repo, capture_output=True, timeout=10,
     )
     if parsed.returncode or not parsed.stdout:
@@ -263,7 +263,7 @@ class SandboxManager:
         else:
             for args in (["--check"], []):
                 subprocess.run(
-                    ["git", "apply", *args, "-"], input=patch_diff.encode("utf-8"), cwd=repo,
+                    ["git", "-c", "core.autocrlf=false", "apply", *args, "-"], input=patch_diff.encode("utf-8"), cwd=repo,
                     capture_output=True, timeout=30, check=True,
                 )
         after = workspace_snapshot(repo)
