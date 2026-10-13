@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     app_name: str = "IncidentPilot"
     environment: str = Field(default="development")
     log_level: str = Field(default="INFO")
+    # Server-provisioned credentials: token -> {subject, role}. No anonymous fallback.
+    api_tokens: dict[str, dict[str, str]] = Field(default_factory=dict, repr=False, exclude=True)
 
     # Database (control plane)
     database_url: str = Field(

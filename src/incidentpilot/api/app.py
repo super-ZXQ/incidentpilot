@@ -12,6 +12,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from incidentpilot.agent.executor import get_run_executor
+from incidentpilot.api.auth import Principal, authenticate
 from incidentpilot.config import Settings, get_settings
 from incidentpilot.models.enums import AgentRunStatus
 from incidentpilot.models.schemas import (
@@ -58,6 +59,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.state.settings = settings
+
     async def session_dep() -> AsyncIterator[AsyncSession]:
         async for session in get_session():
             yield session
@@ -67,7 +70,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return HealthOut(app=settings.app_name, environment=settings.environment)
 
     @app.get("/metrics", include_in_schema=False)
-    async def metrics() -> Response:
+    async def metrics(principal: Principal = Depends(authenticate)) -> Response:
+        principal.require("reviewer", "approver")
         return Response(
             generate_latest(worker_metrics.PROMETHEUS_REGISTRY),
             media_type=CONTENT_TYPE_LATEST,
@@ -81,7 +85,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def create_incident(
         body: IncidentCreate,
         session: AsyncSession = Depends(session_dep),
+        principal: Principal = Depends(authenticate),
     ) -> CreateRunAccepted:
+        principal.require("initiator")
         incident_service = IncidentService(session)
 
         if body.incident_id:
@@ -96,6 +102,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             incident, run = await create_incident_and_run(
                 session,
                 incident_data={
+                    "owner_id": principal.subject,
                     "title": body.title,
                     "service": body.service,
                     "symptom": body.symptom,
@@ -129,42 +136,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def get_incident(
         incident_id: str,
         session: AsyncSession = Depends(session_dep),
+        principal: Principal = Depends(authenticate),
     ) -> IncidentOut:
         incident = await IncidentService(session).get(incident_id)
         if incident is None:
             raise HTTPException(status_code=404, detail="incident not found")
+        principal.access(incident.owner_id)
         return IncidentOut.model_validate(incident)
 
+    async def authorize_run(session: AsyncSession, run, principal: Principal) -> None:
+        from incidentpilot.models.db import Incident
+
+        incident = await session.get(Incident, run.incident_pk)
+        principal.access(incident.owner_id if incident else None)
+
     @app.get("/v1/runs/{run_id}", response_model=RunOut)
-    async def get_run(run_id: str, session: AsyncSession = Depends(session_dep)) -> RunOut:
+    async def get_run(run_id: str, session: AsyncSession = Depends(session_dep), principal: Principal = Depends(authenticate)) -> RunOut:
         run = await RunService(session).get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
+        await authorize_run(session, run, principal)
         return RunOut.model_validate(run)
 
     @app.get("/v1/runs/{run_id}/evidence", response_model=list[EvidenceOut])
     async def list_evidence(
-        run_id: str, session: AsyncSession = Depends(session_dep)
+        run_id: str, session: AsyncSession = Depends(session_dep), principal: Principal = Depends(authenticate)
     ) -> list[EvidenceOut]:
         run = await RunService(session).get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
+        await authorize_run(session, run, principal)
         items = await repo.list_evidence(session, run.id)
         return [EvidenceOut.model_validate(x) for x in items]
 
     @app.get("/v1/runs/{run_id}/tool-calls", response_model=list[ToolCallOut])
     async def list_tool_calls(
-        run_id: str, session: AsyncSession = Depends(session_dep)
+        run_id: str, session: AsyncSession = Depends(session_dep), principal: Principal = Depends(authenticate)
     ) -> list[ToolCallOut]:
         run = await RunService(session).get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
+        await authorize_run(session, run, principal)
         items = await repo.list_tool_calls(session, run.id)
         return [ToolCallOut.model_validate(x) for x in items]
 
     @app.get("/v1/runs/{run_id}/patch-artifact", response_model=list[PatchArtifactOut])
     async def list_patch_artifacts(
-        run_id: str, session: AsyncSession = Depends(session_dep)
+        run_id: str, session: AsyncSession = Depends(session_dep), principal: Principal = Depends(authenticate)
     ) -> list[PatchArtifactOut]:
         from sqlalchemy import select
 
@@ -173,6 +191,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run = await RunService(session).get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
+        await authorize_run(session, run, principal)
         result = await session.execute(
             select(PatchArtifact).where(PatchArtifact.run_pk == run.id)
         )
@@ -184,11 +203,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run_id: str,
         body: ApprovalRequest,
         session: AsyncSession = Depends(session_dep),
+        principal: Principal = Depends(authenticate),
     ) -> ApprovalOut:
+        principal.require("approver")
         run_service = RunService(session)
         run = await run_service.get(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
+        await authorize_run(session, run, principal)
         if run.status != AgentRunStatus.WAITING_APPROVAL.value:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -200,7 +222,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             approval, run = await approval_service.decide(
                 run,
                 body.decision,
-                actor=body.actor,
+                actor=principal.subject,
+                patch_artifact_id=body.patch_artifact_id,
+                patch_hash=body.patch_hash,
                 reason=body.reason,
                 lease_seconds=settings.job_lease_seconds,
                 owner_id=f"approval-api-{uuid.uuid4().hex[:8]}",

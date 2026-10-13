@@ -130,7 +130,18 @@ class ApprovalService:
         reason: str = "",
         lease_seconds: int = 60,
         owner_id: str = "approval-api",
+        patch_artifact_id: str | None = None,
+        patch_hash: str | None = None,
     ):
+        from incidentpilot.services.artifacts import binding, validated_artifact
+
+        try:
+            artifact = await validated_artifact(self.session, run, patch_artifact_id)
+            if patch_hash is not None and patch_hash != artifact.patch_hash:
+                raise ValueError("approval patch hash mismatch")
+        except ValueError as exc:
+            await self.session.rollback()
+            raise ApprovalConflict(str(exc)) from exc
         target = (
             AgentRunStatus.NEEDS_HUMAN_INTERVENTION
             if decision == ApprovalDecision.REJECT
@@ -164,6 +175,8 @@ class ApprovalService:
             raise ApprovalConflict("approval was already decided")
         approval = Approval(
             run_pk=run.id,
+            patch_artifact_id=artifact.patch_artifact_id,
+            payload=binding(artifact),
             decision=decision.value,
             actor=actor,
             reason=reason,

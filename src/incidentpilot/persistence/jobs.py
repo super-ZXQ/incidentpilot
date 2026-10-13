@@ -59,6 +59,7 @@ async def create_incident_and_run(
         repository=incident_data.get("repository", ""),
         environment=incident_data.get("environment", "reference-production"),
         payload=incident_data.get("payload") or {},
+        owner_id=incident_data.get("owner_id"),
     )
     run = AgentRun(
         run_id=repo.new_id("RUN"),

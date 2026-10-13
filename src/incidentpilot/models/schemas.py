@@ -115,7 +115,9 @@ class PatchArtifactOut(BaseModel):
 
 class ApprovalRequest(BaseModel):
     decision: ApprovalDecision
-    actor: str = "human"
+    actor: str | None = None  # Legacy input accepted but never trusted.
+    patch_artifact_id: str | None = None
+    patch_hash: str | None = None
     reason: str = ""
 
 

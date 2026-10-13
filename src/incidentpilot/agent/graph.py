@@ -261,6 +261,9 @@ async def run_agent_workflow(
                         stdout=item.get("test_stdout", ""),
                         stderr=item.get("test_stderr", ""),
                         command="pytest_regression",
+                        patch_hash=hash_patch(patch_diff),
+                        base_commit_sha=item.get("base_commit_sha", ""),
+                        mode=item.get("test_mode", "unknown"),
                     )
                 )
         run.plan = list(final_state.get("plan") or [])
@@ -606,7 +609,7 @@ async def _run_with_langgraph(
             s["status"] = AgentRunStatus.FAILED.value
             return s
         try:
-            result = manager.run_tests(s["run_id"], profile="pytest", timeout=90)
+            result = await manager.run_tests_async(s["run_id"], profile="pytest", timeout=90)
         except Exception as exc:
             s["status"] = AgentRunStatus.FAILED.value
             s["error"] = f"run tests failed: {exc}"
@@ -617,6 +620,8 @@ async def _run_with_langgraph(
                 {
                     "test_run_id": test_run_id,
                     "test_ok": result.ok,
+                    "base_commit_sha": manager.base_commit_sha(s["run_id"]),
+                    "test_mode": result.mode,
                     "test_stdout": result.stdout[-4000:],
                     "test_stderr": result.stderr[-2000:],
                     "status": (
@@ -838,7 +843,7 @@ async def _run_with_langgraph(
             s["status"] = AgentRunStatus.FAILED.value
             return s
         try:
-            result = manager.run_tests(s["run_id"], profile="pytest_regression", timeout=90)
+            result = await manager.run_tests_async(s["run_id"], profile="pytest_regression", timeout=90)
         except Exception as exc:
             s["status"] = AgentRunStatus.FAILED.value
             s["error"] = f"run tests failed: {exc}"
@@ -849,6 +854,8 @@ async def _run_with_langgraph(
                 {
                     "test_run_id": test_run_id,
                     "test_ok": result.ok,
+                    "base_commit_sha": manager.base_commit_sha(s["run_id"]),
+                    "test_mode": result.mode,
                     "test_stdout": result.stdout[-4000:],
                     "test_stderr": result.stderr[-2000:],
                     "status": (

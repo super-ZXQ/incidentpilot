@@ -28,7 +28,8 @@ async def resume_after_approval(
     async with factory() as session:
         from sqlalchemy import select
 
-        from incidentpilot.models.db import AgentRun, ExternalSideEffect, PatchArtifact
+        from incidentpilot.models.db import AgentRun, Approval, ExternalSideEffect
+        from incidentpilot.services.artifacts import binding, validated_artifact
 
         result = await session.execute(select(AgentRun).where(AgentRun.run_id == run_id))
         run = result.scalar_one_or_none()
@@ -36,6 +37,12 @@ async def resume_after_approval(
             raise ValueError(f"run not found: {run_id}")
 
         service = RunService(session)
+        approval = await session.scalar(select(Approval).where(Approval.run_pk == run.id))
+        if approval is None or approval.decision != decision.value:
+            raise ValueError("persisted human approval required")
+        artifact = await validated_artifact(session, run, approval.patch_artifact_id)
+        if approval.payload != binding(artifact):
+            raise ValueError("approved artifact binding changed")
 
         if decision == ApprovalDecision.REJECT:
             await service.mark_status(
@@ -53,20 +60,6 @@ async def resume_after_approval(
             AgentRunStatus.RUNNING,
             workflow_state=WorkflowState.CREATE_PULL_REQUEST.value,
         )
-
-        art_result = await session.execute(
-            select(PatchArtifact).where(PatchArtifact.run_pk == run.id)
-        )
-        artifact = art_result.scalars().first()
-        if artifact is None:
-            await service.mark_status(
-                run,
-                AgentRunStatus.FAILED,
-                workflow_state=WorkflowState.FAILED.value,
-                error="no PatchArtifact available for PR creation",
-                finished=True,
-            )
-            return {"status": run.status, "error": "missing patch artifact"}
 
         idempotency_key = f"github_pr:{run.run_id}:{artifact.patch_hash}"
         effect_result = await session.execute(
