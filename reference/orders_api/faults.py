@@ -92,6 +92,13 @@ def _bad_commit(params: dict[str, Any]) -> dict[str, Any]:
     return {"error_message": params.get("error_message", "regression in serializer")}
 
 
+
+# Independent deterministic response regressions used only by benchmark setup.
+for _response_fault in ("pagination_off_by_one", "duplicate_orders", "missing_items", "wrong_customer",
+                        "wrong_total", "reversed_orders", "hidden_orders", "invalid_status", "inflated_price"):
+    HANDLERS[_response_fault] = FaultHandler(_response_fault, lambda params: dict(params))
+
+
 def apply_fault(fault_type: str, params: dict[str, Any] | None = None, case_id: str | None = None) -> dict[str, Any]:
     if fault_type not in HANDLERS:
         raise ValueError(f"unknown/unregistered fault_type: {fault_type}")

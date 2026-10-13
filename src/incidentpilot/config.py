@@ -51,6 +51,9 @@ class Settings(BaseSettings):
         default=False,
         description="Evaluation-only stop after a verified root cause; API incidents cannot override it.",
     )
+    evaluation_strategy: Literal["autonomous", "fixed", "direct"] = "autonomous"
+    # Server-side evaluation oracle. Never copied from an Incident payload.
+    sandbox_fault_type: str | None = None
 
     # Durable PostgreSQL worker queue
     embedded_worker_enabled: bool = Field(default=False)

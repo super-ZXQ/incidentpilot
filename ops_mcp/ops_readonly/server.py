@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,21 @@ REFERENCE_LOGS = Path(os.environ.get("REFERENCE_LOGS_PATH", "./reference/orders_
 REFERENCE_ORDERS_API_URL = os.environ.get("REFERENCE_ORDERS_API_URL", "http://127.0.0.1:8001")
 
 mcp = FastMCP("ops-readonly")
+
+
+def safe_tool(function):
+    """Direct MCP callers receive the same bounded/redacted output as the Agent."""
+    @wraps(function)
+    def call(*args, **kwargs):
+        from incidentpilot.tools.data import redact
+
+        if len(json.dumps([args, kwargs], default=str)) > 16_000:
+            return {"error": "tool input limit exceeded"}
+        result = function(*args, **kwargs)
+        if len(json.dumps(result, default=str).encode("utf-8")) > 64_000:
+            return {"error": "tool output limit exceeded"}
+        return redact(result)
+    return call
 
 
 def _resolve_reference_repo(repository: str) -> Path:
@@ -39,8 +55,10 @@ def _read_json_file(path: Path, default: Any) -> Any:
 
 
 @mcp.tool()
+@safe_tool
 def read_metrics(service: str = "orders-api", window: str = "incident") -> dict[str, Any]:
     """Read metrics from the reference environment."""
+    http_error = "metrics source unavailable"
     try:
         import httpx
 
@@ -63,12 +81,20 @@ def read_metrics(service: str = "orders-api", window: str = "incident") -> dict[
 
 
 @mcp.tool()
+@safe_tool
 def read_logs(service: str = "orders-api", window: str = "incident", limit: int = 50) -> dict[str, Any]:
     """Read structured JSON logs from the reference environment."""
+    if not 1 <= limit <= 50:
+        return {"error": "limit must be between 1 and 50"}
     log_file = REFERENCE_LOGS / "orders.jsonl"
     lines: list[dict[str, Any]] = []
     if log_file.exists():
-        for line in log_file.read_text(encoding="utf-8").splitlines():
+        with log_file.open("rb") as stream:
+            stream.seek(max(0, log_file.stat().st_size - 128_000))
+            if stream.tell():
+                stream.readline()  # Drop a partial first line.
+            raw_lines = stream.read(128_000).decode("utf-8", "replace").splitlines()
+        for line in raw_lines:
             line = line.strip()
             if not line:
                 continue
@@ -113,6 +139,7 @@ def read_logs(service: str = "orders-api", window: str = "incident", limit: int 
 
 
 @mcp.tool()
+@safe_tool
 def inspect_git_history(repository: str = "", limit: int = 10) -> dict[str, Any]:
     """Inspect git history in the reference repository (read-only)."""
     import subprocess
@@ -130,6 +157,7 @@ def inspect_git_history(repository: str = "", limit: int = 10) -> dict[str, Any]
             cwd=repo_path,
             text=True,
             stderr=subprocess.DEVNULL,
+            timeout=10,
         )
         commits = []
         for line in out.splitlines():
@@ -149,6 +177,7 @@ def inspect_git_history(repository: str = "", limit: int = 10) -> dict[str, Any]
 
 
 @mcp.tool()
+@safe_tool
 def inspect_git_diff(repository: str = "", commit_sha: str = "HEAD") -> dict[str, Any]:
     """Inspect a commit diff (read-only)."""
     import subprocess
@@ -167,6 +196,7 @@ def inspect_git_diff(repository: str = "", commit_sha: str = "HEAD") -> dict[str
             cwd=repo_path,
             text=True,
             stderr=subprocess.DEVNULL,
+            timeout=10,
         )
         return {"repository": str(repo_path), "commit_sha": commit_sha, "diff": diff[:20000]}
     except Exception as exc:
@@ -174,12 +204,17 @@ def inspect_git_diff(repository: str = "", commit_sha: str = "HEAD") -> dict[str
 
 
 @mcp.tool()
+@safe_tool
 def read_source_code(repository: str = "", path: str = "app.py") -> dict[str, Any]:
     """Read a source file from the reference repository (read-only)."""
     try:
         repo_path = _resolve_reference_repo(repository)
     except ValueError as exc:
         return {"error": str(exc), "repository": repository, "path": path}
+    from incidentpilot.sandbox.manager import sensitive_path
+
+    if sensitive_path(path):
+        return {"error": "sensitive source path forbidden", "path": path}
     lowered_parts = {part.lower() for part in Path(path).parts}
     if any(
         part == ".env"
@@ -190,7 +225,12 @@ def read_source_code(repository: str = "", path: str = "app.py") -> dict[str, An
         for part in lowered_parts
     ):
         return {"error": "sensitive source path forbidden", "path": path}
-    file_path = repo_path / path
+    from incidentpilot.sandbox.manager import validate_patch_path
+
+    try:
+        file_path = validate_patch_path(repo_path, path)
+    except ValueError as exc:
+        return {"error": str(exc)}
     # Prevent path escape
     try:
         resolved = file_path.resolve()
@@ -201,11 +241,14 @@ def read_source_code(repository: str = "", path: str = "app.py") -> dict[str, An
         return {"error": str(exc), "path": path}
     if not file_path.exists():
         return {"error": "file not found", "path": str(file_path)}
-    content = file_path.read_text(encoding="utf-8", errors="replace")
-    return {"path": str(file_path), "content": content[:50000]}
+    if file_path.is_symlink() or not file_path.is_file() or file_path.stat().st_size > 50_000:
+        return {"error": "source must be a bounded regular file"}
+    content = file_path.read_text(encoding="utf-8", errors="strict")
+    return {"path": str(file_path), "content": content}
 
 
 @mcp.tool()
+@safe_tool
 def query_database_readonly(query: str = "SELECT 1") -> dict[str, Any]:
     """Run a read-only SQL query against the reference database.
 
@@ -214,7 +257,8 @@ def query_database_readonly(query: str = "SELECT 1") -> dict[str, Any]:
     try:
         from incidentpilot.tools.sql_guard import validate_readonly_sql
 
-        validate_readonly_sql(query)
+        validated = validate_readonly_sql(query)
+        query = validated["query"]
     except Exception as exc:
         return {"error": str(exc), "query": query, "validated": False}
 
@@ -228,7 +272,17 @@ def query_database_readonly(query: str = "SELECT 1") -> dict[str, Any]:
             with psycopg.connect(ref_db_url, connect_timeout=3) as conn:
                 conn.read_only = True
                 with conn.cursor() as cur:
+                    cur.execute("SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = current_user")
+                    role = cur.fetchone()
+                    cur.execute("SHOW default_transaction_read_only")
+                    if role is None or any(role) or cur.fetchone()[0] != "on":
+                        raise PermissionError("dedicated readonly database role required")
+                    cur.execute("SELECT has_table_privilege(current_user, c.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,TRIGGER') FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r','p')")
+                    if any(row[0] for row in cur.fetchall()):
+                        raise PermissionError("database role has write privileges")
                     cur.execute("SET statement_timeout = '5s'")
+                    cur.execute("SET LOCAL lock_timeout = '1s'")
+                    cur.execute("SET LOCAL search_path = public, pg_catalog")
                     cur.execute(query)
                     if cur.description is None:
                         return {"query": query, "rows": [], "source": "reference_postgres"}

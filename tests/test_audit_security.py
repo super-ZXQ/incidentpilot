@@ -72,19 +72,33 @@ async def test_approval_binding_and_trusted_actor(db_session):
 @pytest.mark.parametrize("tamper", ["diff", "test", "base", "run", "hash"])
 async def test_tampered_artifacts_cannot_be_approved(db_session, tamper):
     run, artifact = await make_artifact(db_session)
+    # Simulate an out-of-band storage corruption, bypassing ORM immutability.
+    from sqlalchemy import update
+
+    values = {}
     if tamper == "diff":
-        artifact.patch_diff += "tamper"
+        values["patch_diff"] = artifact.patch_diff + "tamper"
     elif tamper == "base":
-        artifact.base_commit_sha = "changed"
+        values["base_commit_sha"] = "changed"
     elif tamper == "test":
-        artifact.test_run_id = "unknown"
+        values["test_run_id"] = "unknown"
     elif tamper == "run":
         run.result = {"patch_artifact_id": "another-run"}
     else:
-        artifact.patch_hash = "0" * 64
+        values["patch_hash"] = "0" * 64
+    if values:
+        await db_session.execute(update(PatchArtifact).where(PatchArtifact.id == artifact.id).values(**values))
     await db_session.commit()
     with pytest.raises(ApprovalConflict):
         await ApprovalService(db_session).decide(run, ApprovalDecision.APPROVE, actor="admin")
+
+
+async def test_orm_artifact_cannot_be_modified(db_session):
+    _, artifact = await make_artifact(db_session)
+    artifact.patch_diff = "changed"
+    with pytest.raises(ValueError, match="immutable"):
+        await db_session.commit()
+    await db_session.rollback()
 
 
 @pytest.mark.parametrize("name", [".env", ".env.production", "api_token.txt", "credentials.json", "private/key.pem", ".aws/config"])

@@ -1,0 +1,29 @@
+id: fault_010_cache_failure
+title: A cache failure simulation adds a per-order fallback delay.
+category: dependency
+difficulty: complex
+fault_type: cache_failure
+params:
+  per_row_delay: 0.01
+incident:
+  title: Orders listing regression 10
+  service: orders-api
+  severity: SEV2
+  symptom: Orders listing differs from its established latency or response contract.
+  environment: reference-production
+  repository: reference/orders_api
+ground_truth:
+  fault_category: dependency
+  affected_component: orders-api /orders handler
+  root_cause: A cache failure simulation adds a per-order fallback delay.
+  causal_facts:
+  - each order incurs fallback delay
+  - listing latency scales with returned orders
+expected_evidence_sources:
+- read_metrics
+- read_logs
+- read_source_code
+expected_fix_behavior:
+  must_pass_tests: true
+  notes: Reproduce with the fault active and compare response and latency to healthy
+    behavior; healthy-only tests are insufficient.

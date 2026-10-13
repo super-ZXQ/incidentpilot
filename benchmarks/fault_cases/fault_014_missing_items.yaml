@@ -1,0 +1,28 @@
+id: fault_014_missing_items
+title: The response clears every populated items collection.
+category: data_contract
+difficulty: medium
+fault_type: missing_items
+params: {}
+incident:
+  title: Orders listing regression 14
+  service: orders-api
+  severity: SEV2
+  symptom: Orders listing differs from its established latency or response contract.
+  environment: reference-production
+  repository: reference/orders_api
+ground_truth:
+  fault_category: data_contract
+  affected_component: orders-api /orders handler
+  root_cause: The response clears every populated items collection.
+  causal_facts:
+  - order items are overwritten with an empty list
+  - existing items disappear from the response
+expected_evidence_sources:
+- read_metrics
+- read_logs
+- read_source_code
+expected_fix_behavior:
+  must_pass_tests: true
+  notes: Reproduce with the fault active and compare response and latency to healthy
+    behavior; healthy-only tests are insufficient.

@@ -4,7 +4,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 
 from incidentpilot.models.db import AgentRun
 from incidentpilot.persistence.jobs import ClaimedRun, utcnow
@@ -27,11 +27,12 @@ async def fence(session, run_id: str) -> None:
         raise LostLeaseError("claim belongs to another run")
     # The conditional UPDATE locks the row until the caller commits artifacts or
     # state, so another claimer cannot interleave a final write.
+    current = func.clock_timestamp() if session.bind is not None and session.bind.dialect.name == "postgresql" else utcnow()
     result = await session.execute(update(AgentRun).where(
         AgentRun.run_id == run_id,
         AgentRun.worker_id == claim.worker_id,
         AgentRun.attempt_count == claim.attempt_count,
-        AgentRun.lease_expires_at > utcnow(),
+        AgentRun.lease_expires_at > current,
         AgentRun.status == "RUNNING",
     ).values(worker_id=claim.worker_id).execution_options(synchronize_session=False))
     if result.rowcount != 1:

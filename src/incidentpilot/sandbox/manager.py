@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Server-side allowlisted test commands (not LLM-generated)
 ALLOWED_TEST_COMMANDS = {
     "pytest": ["python", "-m", "pytest", "-q", "--tb=short"],
+    "pytest_fault": ["python", "-m", "pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "../checks/test_fault_active.py"],
     # Regression profile: only healthy-path tests after a fix is applied
     "pytest_regression": [
         "python",
@@ -45,6 +46,8 @@ FORBIDDEN_PATCH_PARTS = {
     "secrets",
     "secret",
     "docker.sock",
+    "conftest.py",
+    ".gitattributes",
 }
 # The Docker socket cannot access Docker socket from the sandbox because it is
 # never mounted; the name is also denied as a patch target.
@@ -75,7 +78,7 @@ def validate_patch_path(repo: Path, raw_path: str) -> Path:
         if part.rstrip(" .") != part:
             raise ValueError("unsafe Windows path alias")
         candidate = candidate / part
-        if candidate.is_symlink():
+        if candidate.is_symlink() or candidate.is_junction():
             raise ValueError("symlink patch path forbidden")
     resolved = candidate.resolve()
     if not resolved.is_relative_to(repo.resolve()):
@@ -214,7 +217,7 @@ class SandboxManager:
         def excluded(directory, names):
             return [name for name in names if sensitive_path(name)
                     or name in {"__pycache__", "var", ".pytest_cache"}
-                    or name.endswith((".db", ".log")) or (Path(directory) / name).is_symlink()]
+                    or name.endswith((".db", ".log")) or (Path(directory) / name).is_symlink() or (Path(directory) / name).is_junction()]
         if source.is_dir():
             shutil.copytree(source, dest, ignore=excluded)
         else:
@@ -233,6 +236,31 @@ class SandboxManager:
         self._base_commits[run_id] = (
             commit.stdout.strip() if commit.returncode == 0 else "UNVERSIONED"
         )
+        if commit.returncode == 0:
+            dirty = subprocess.run(["git", "status", "--porcelain", "--", "."], cwd=source if source.is_dir() else source.parent, capture_output=True, timeout=10)
+            if dirty.stdout:
+                self._base_commits[run_id] = "UNVERSIONED"
+                if self.settings.environment not in {"development", "test"}:
+                    raise ValueError("protected sandbox source must match a clean Git base")
+        if self.settings.sandbox_fault_type:
+            from incidentpilot.benchmarks.fault_cases import REGISTERED_FAULT_TYPES
+
+            if self.settings.sandbox_fault_type not in REGISTERED_FAULT_TYPES:
+                raise ValueError("unknown fault oracle")
+            checks = root / "checks"
+            checks.mkdir()
+            (checks / "test_fault_active.py").write_text(
+                "import time\nfrom app import create_app\nfrom faults import reset_fault\nfrom fastapi.testclient import TestClient\n"
+                "def test_fault_active_restores_healthy_behavior():\n"
+                "    reset_fault()\n    client = TestClient(create_app('sqlite:///:memory:'))\n"
+                "    healthy = client.get('/orders').json()\n"
+                f"    client.post('/admin/fault', json={{'fault_type': {self.settings.sandbox_fault_type!r}, 'params': {{'delay_seconds': .4, 'per_row_delay': .06}}}})\n"
+                "    started = time.perf_counter()\n    response = client.get('/orders')\n"
+                "    elapsed = time.perf_counter() - started\n"
+                "    assert response.status_code == 200\n    assert response.json() == healthy\n"
+                "    assert elapsed < .25, f'fault still active: {elapsed}s'\n    reset_fault()\n",
+                encoding="utf-8",
+            )
         return dest
 
     def base_commit_sha(self, run_id: str) -> str:
@@ -286,6 +314,8 @@ class SandboxManager:
             raise RuntimeError("workspace not created")
         repo = root / "repo"
         cmd = list(ALLOWED_TEST_COMMANDS[profile])
+        if profile == "pytest_fault" and not (root / "checks" / "test_fault_active.py").is_file():
+            raise ValueError("fault-active test oracle is missing")
         protected = self.settings.environment not in {"development", "test"}
         if protected and not self.settings.sandbox_enabled:
             raise RuntimeError("protected environment requires Docker sandbox")
@@ -296,11 +326,13 @@ class SandboxManager:
             if self.settings.sandbox_network != "none":
                 raise ValueError("sandbox network must be none")
             cmd = [
-                "docker", "run", "--rm", "--name", container,
+                "docker", "run", "--rm", "--name", container, "--label", f"incidentpilot.run_id={run_id}",
                 "--network", "none", "--user", "65534:65534", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges", "--memory", "512m", "--cpus", "1.0",
                 "--pids-limit", "128", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
                 "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTEST_ADDOPTS=-p no:cacheprovider",
+                "-e", "PYTHONPATH=/workspace",
+                *(["-v", f"{root / 'checks'}:/checks:ro"] if profile == "pytest_fault" else []),
                 "-v", f"{repo}:/workspace:ro", "-w", "/workspace", self.settings.sandbox_image, *cmd,
             ]
         else:

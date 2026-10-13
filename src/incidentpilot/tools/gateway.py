@@ -6,6 +6,7 @@ Agent never calls systems directly. All tools route through this layer.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -18,6 +19,7 @@ from typing import Any
 import httpx
 
 from incidentpilot.models.enums import ToolCallStatus
+from incidentpilot.tools.data import redact
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,8 @@ class ToolGateway:
         self.audit_log: list[dict[str, Any]] = []
 
     def _validate_input(self, spec: ToolSpec, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict) or len(json.dumps(payload, default=str)) > 16_000:
+            raise ValueError("invalid or oversized tool input")
         schema = spec.input_schema or {}
         required = schema.get("required") or []
         properties = schema.get("properties") or {}
@@ -133,6 +137,12 @@ class ToolGateway:
                     py_type = {"string": str, "integer": int, "number": (int, float), "boolean": bool}.get(expected)
                     if py_type is not None and not isinstance(value, py_type):
                         raise ValueError(f"invalid type for {spec.name}.{key}: expected {expected}")
+                    if expected in {"integer", "number"} and isinstance(value, bool):
+                        raise ValueError("boolean is not a numeric tool argument")
+                    if isinstance(value, str) and len(value) > (8192 if key == "query" else 512):
+                        raise ValueError(f"tool argument too long: {key}")
+                    if key == "limit" and not 1 <= value <= 50:
+                        raise ValueError("limit must be between 1 and 50")
                     cleaned[key] = value
                 else:
                     # Keep extra fields for flexible tools, but schema-first tools can reject
@@ -142,7 +152,9 @@ class ToolGateway:
         return cleaned
 
     def _audit(self, event: dict[str, Any]) -> None:
+        event = redact(event)
         self.audit_log.append(event)
+        del self.audit_log[:-1000]
         if self.audit_sink is not None:
             self.audit_sink(event)
 
@@ -162,7 +174,7 @@ class ToolGateway:
                 tool_name=name,
                 status=ToolCallStatus.DENIED.value,
                 error=f"tool not registered: {name}",
-                input=payload,
+                input=redact(payload),
                 error_category="permission",
                 trace_id=trace_id,
             )
@@ -183,7 +195,7 @@ class ToolGateway:
                 tool_name=name,
                 status=ToolCallStatus.DENIED.value,
                 error="tool call budget exhausted",
-                input=payload,
+                input=redact(payload),
                 error_category="budget",
                 trace_id=trace_id,
             )
@@ -205,7 +217,7 @@ class ToolGateway:
                 tool_name=name,
                 status=ToolCallStatus.FAILED.value,
                 error=str(exc),
-                input=payload,
+                input=redact(payload),
                 error_category="validation",
                 trace_id=trace_id,
             )
@@ -216,7 +228,14 @@ class ToolGateway:
 
         final_category: str | None = None
         attempts = spec.max_retries + 1
+        executed_attempts = 0
         for attempt in range(attempts):
+            if attempt:
+                if not self.budget.can_call_tool():
+                    last_error, status, final_category = "retry budget exhausted", ToolCallStatus.DENIED.value, "budget"
+                    break
+                self.budget.record_tool_call()
+            executed_attempts += 1
             try:
                 from incidentpilot.observability.otel import start_span
 
@@ -235,8 +254,13 @@ class ToolGateway:
                         timeout=spec.timeout_seconds,
                     )
                 latency = (time.perf_counter() - started) * 1000
-                if not isinstance(output, dict):
-                    output = {"result": output}
+                if (not isinstance(output, dict) or not output or output.get("error")
+                        or output.get("isError") or output.get("partial") or output.get("truncated")):
+                    raise ValueError("tool returned error, empty, invalid or incomplete result")
+                if len(json.dumps(output, default=str).encode("utf-8")) > 64_000:
+                    raise ValueError("tool result exceeds size limit")
+                output = redact(output)
+                cleaned = redact(cleaned)
                 result = ToolResult(
                     tool_call_id=tool_call_id,
                     tool_name=name,
@@ -244,7 +268,7 @@ class ToolGateway:
                     output=output,
                     latency_ms=latency,
                     input=cleaned,
-                    attempt_count=attempt + 1,
+                    attempt_count=executed_attempts,
                     trace_id=trace_id,
                 )
                 self._audit(
@@ -264,7 +288,7 @@ class ToolGateway:
                 status = ToolCallStatus.TIMEOUT.value
                 final_category = "timeout"
             except Exception as exc:
-                last_error = str(exc)
+                last_error = redact(str(exc))[:2000]
                 status = ToolCallStatus.FAILED.value
                 final_category, retryable = classify_tool_error(exc)
                 logger.debug("tool %s attempt %s failed: %s", name, attempt, exc)
@@ -295,8 +319,8 @@ class ToolGateway:
             status=status,
             error=last_error,
             latency_ms=latency,
-            input=cleaned,
-            attempt_count=attempt + 1,
+            input=redact(cleaned),
+            attempt_count=executed_attempts,
             error_category=final_category,
             trace_id=trace_id,
         )

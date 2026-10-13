@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from incidentpilot.agent.decision import READONLY_TOOLS, AgentDecisionModel
+from incidentpilot.agent.evidence import content_hash, valid_evidence
 from incidentpilot.config import Settings
 from incidentpilot.llm.provider import build_llm_provider
 from incidentpilot.models.enums import AgentRunStatus, WorkflowState
@@ -99,7 +100,7 @@ def build_tool_gateway(settings: Settings) -> tuple[ToolGateway, Any]:
     else:
         from incidentpilot.tools.mcp_adapter import MCPReadonlyAdapter
 
-        adapter = MCPReadonlyAdapter(live=True)
+        adapter = MCPReadonlyAdapter(live=True, settings=settings)
         register_mcp_readonly_tools(registry, adapter)
     budget = BudgetTracker(
         max_tool_calls=settings.max_tool_calls,
@@ -381,7 +382,12 @@ async def _run_with_langgraph(
 
     async def plan_node(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.PLAN.value
-        plan = await decision_model.plan(incident_context(s))
+        if settings.evaluation_strategy == "autonomous":
+            plan = await decision_model.plan(incident_context(s))
+        else:
+            from incidentpilot.llm.schemas import InvestigationPlan
+
+            plan = InvestigationPlan(focus="controlled evaluation baseline", steps=["Collect fixed context", "Diagnose from observations"])
         s["plan"] = plan.steps
         s["result"] = {
             **(s.get("result") or {}),
@@ -405,7 +411,16 @@ async def _run_with_langgraph(
             ]
             if recent_failures:
                 decision_context["recent_tool_errors"] = recent_failures
-            action = await decision_model.next_action(decision_context, evidence)
+            if settings.evaluation_strategy in {"direct", "fixed"}:
+                from incidentpilot.llm.schemas import NextAction, ToolSelection
+
+                fixed = [("read_metrics", {"service": s["service"]}), ("read_logs", {"service": s["service"]}), ("inspect_git_history", {"repository": s["repository"], "limit": 5})]
+                if settings.evaluation_strategy == "direct":
+                    fixed.append(("read_source_code", {"repository": s["repository"], "path": "app.py"}))
+                index = len(tool_calls)
+                action = NextAction(action="form_hypothesis") if index >= len(fixed) else NextAction(action="collect_evidence", tool_selection=ToolSelection(tool_name=fixed[index][0], arguments=fixed[index][1], reason="fixed baseline observation"))
+            else:
+                action = await decision_model.next_action(decision_context, evidence)
             if action.action == "form_hypothesis":
                 break
             if action.action in {"insufficient_evidence", "needs_human"}:
@@ -476,10 +491,23 @@ async def _run_with_langgraph(
         if s.get("status") != AgentRunStatus.RUNNING.value:
             return s
         evidence = s.get("evidence") or []
+        evidence = valid_evidence(evidence, s.get("tool_calls") or [], s["run_id"])
+        s["evidence"] = evidence
         if len(evidence) < 2:
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             s["result"] = {"message": "insufficient evidence", "evidence_count": len(evidence)}
+            return s
+        if settings.evaluation_strategy == "direct":
+            conclusion = await decision_model.direct_conclusion(incident_context(s), evidence)
+            ids = conclusion.supporting_evidence_ids
+            if ids and set(ids).issubset({e["evidence_id"] for e in evidence}):
+                s["root_cause"] = {**conclusion.model_dump(), "summary": conclusion.statement, "evidence_ids": ids, "verified": False}
+                s["status"] = AgentRunStatus.INVESTIGATION_COMPLETE.value
+                s["workflow_state"] = WorkflowState.ROOT_CAUSE_FOUND.value
+            else:
+                s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+                s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             return s
         proposal = await decision_model.propose_hypothesis(incident_context(s), evidence)
         known = {e["evidence_id"] for e in evidence}
@@ -505,16 +533,30 @@ async def _run_with_langgraph(
         from incidentpilot.llm.schemas import HypothesisProposal
 
         proposal = HypothesisProposal.model_validate(s["hypotheses"][-1])
-        selection = await decision_model.verification_action(
-            incident_context(s), list(s.get("evidence") or []), proposal
-        )
+        if settings.evaluation_strategy == "fixed":
+            from incidentpilot.llm.schemas import ToolSelection
+
+            selection = ToolSelection(tool_name="read_source_code", arguments={"repository": s["repository"], "path": "app.py"}, reason="fixed independent verification")
+        else:
+            selection = await decision_model.verification_action(
+                incident_context(s), list(s.get("evidence") or []), proposal
+            )
         source = await _call_tool(gateway, s, selection.tool_name, selection.arguments)
         s["tool_calls"] = list(s.get("tool_calls") or []) + [source]
         extra_evidence = list(s.get("evidence") or [])
+        if (source["status"] != "SUCCEEDED"
+                or selection.tool_name in {e["source"] for e in extra_evidence}
+                or content_hash(source["output"]) in {e.get("hash") for e in extra_evidence}):
+            s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
+            s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+            s["result"] = {**(s.get("result") or {}), "stop_reason": "verification failed or supplied no independent observation"}
+            return s
         if source["status"] == "SUCCEEDED":
             extra_evidence.append(
                 {
                     "evidence_id": repo.new_id("EVID"),
+                    "run_id": s["run_id"],
+                    "hash": content_hash(source["output"]),
                     "source": selection.tool_name,
                     "source_type": "verification",
                     "tool_call_id": source["tool_call_id"],
@@ -523,6 +565,8 @@ async def _run_with_langgraph(
                     "result": source["output"],
                 }
             )
+        s["evidence"] = extra_evidence
+        extra_evidence = valid_evidence(extra_evidence, s["tool_calls"], s["run_id"])
         s["evidence"] = extra_evidence
 
         decision = await decision_model.verify(proposal, extra_evidence)
@@ -548,7 +592,12 @@ async def _run_with_langgraph(
             extra_evidence,
         )
         known = {e["evidence_id"] for e in extra_evidence}
-        if not conclusion.supporting_evidence_ids or not set(conclusion.supporting_evidence_ids).issubset(known):
+        if (not conclusion.supporting_evidence_ids
+                or not set(conclusion.supporting_evidence_ids).issubset(known)
+                or extra_evidence[-1]["evidence_id"] not in conclusion.supporting_evidence_ids
+                or len({e["source"] for e in extra_evidence if e["evidence_id"] in conclusion.supporting_evidence_ids}) < 2
+                or (not decision_model.deterministic and conclusion.fault_category not in {
+                    "database_performance", "application_bug", "dependency", "data_contract", "configuration", "code_regression"})):
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             return s
@@ -749,7 +798,7 @@ async def _run_with_langgraph(
         route_after_collect,
         {"form_hypothesis": "form_hypothesis", "end": END},
     )
-    builder.add_edge("form_hypothesis", "verify_hypothesis")
+    builder.add_conditional_edges("form_hypothesis", lambda s: "verify" if s.get("status") == "RUNNING" else "end", {"verify": "verify_hypothesis", "end": END})
     builder.add_conditional_edges(
         "verify_hypothesis",
         route_after_verify,
@@ -800,9 +849,9 @@ async def _run_with_langgraph(
         if not source.exists():
             source = Path(__file__).resolve().parents[3] / "reference" / "orders_api"
         manager = SandboxManager(settings)
+        runtime[s["run_id"]] = {"manager": manager}
         try:
             manager.create_workspace(s["run_id"], source)
-            runtime[s["run_id"]] = {"manager": manager}
             s["result"] = {**(s.get("result") or {}), "sandbox_source": str(source)}
         except Exception as exc:
             s["status"] = AgentRunStatus.FAILED.value
@@ -810,11 +859,27 @@ async def _run_with_langgraph(
             s["workflow_state"] = WorkflowState.FAILED.value
         return s
 
+    async def ensure_workspace(s: AgentState, *, replay_patch=False):
+        manager = (runtime.get(s["run_id"]) or {}).get("manager")
+        if manager is not None:
+            return manager
+        await create_sandbox_node_r(s)
+        if s.get("status") != "RUNNING":
+            return None
+        manager = runtime[s["run_id"]]["manager"]
+        attempts = s.get("patch_attempts") or []
+        if replay_patch and attempts and attempts[-1].get("patch_diff"):
+            expected_base = attempts[-1].get("base_commit_sha")
+            if expected_base != manager.base_commit_sha(s["run_id"]):
+                raise ValueError("checkpoint patch base changed; revalidation required")
+            manager.apply_patch(s["run_id"], attempts[-1]["patch_diff"])
+        return manager
+
     async def generate_patch_node_r(s: AgentState) -> AgentState:
         from incidentpilot.sandbox.manager import generate_deterministic_patch
 
         s["workflow_state"] = WorkflowState.GENERATE_PATCH.value
-        manager = (runtime.get(s["run_id"]) or {}).get("manager")
+        manager = await ensure_workspace(s)
         if manager is None:
             s["status"] = AgentRunStatus.FAILED.value
             s["error"] = "sandbox manager missing"
@@ -848,6 +913,7 @@ async def _run_with_langgraph(
             s["patch_attempts"][-1]["patch_diff"] = patch
             s["patch_attempts"][-1]["status"] = "applied"
             s["patch_attempts"][-1]["generator"] = patch_generator
+            s["patch_attempts"][-1]["base_commit_sha"] = manager.base_commit_sha(s["run_id"])
         except Exception as exc:
             s["patch_attempts"][-1]["status"] = "apply_failed"
             s["patch_attempts"][-1]["error"] = str(exc)
@@ -859,12 +925,12 @@ async def _run_with_langgraph(
         from incidentpilot.models.enums import PatchAttemptStatus, TestRunStatus
 
         s["workflow_state"] = WorkflowState.RUN_TESTS.value
-        manager = (runtime.get(s["run_id"]) or {}).get("manager")
+        manager = await ensure_workspace(s, replay_patch=True)
         if manager is None:
             s["status"] = AgentRunStatus.FAILED.value
             return s
         try:
-            result = await manager.run_tests_async(s["run_id"], profile="pytest_regression", timeout=90)
+            result = await manager.run_tests_async(s["run_id"], profile="pytest_fault" if settings.sandbox_fault_type else "pytest_regression", timeout=90)
         except Exception as exc:
             s["status"] = AgentRunStatus.FAILED.value
             s["error"] = f"run tests failed: {exc}"
@@ -893,6 +959,7 @@ async def _run_with_langgraph(
                 TestRunStatus.PASSED.value if result.ok else TestRunStatus.FAILED.value
             ),
             "test_mode": result.mode,
+            "test_scope": "fault-active" if settings.sandbox_fault_type else "healthy-regression-only",
             "test_exit_code": result.exit_code,
         }
         runtime.setdefault(s["run_id"], {})["test_ok"] = result.ok
@@ -909,6 +976,12 @@ async def _run_with_langgraph(
 
     async def export_artifact_node_r(s: AgentState) -> AgentState:
         s["workflow_state"] = WorkflowState.EXPORT_PATCH_ARTIFACT.value
+        if not (runtime.get(s["run_id"]) or {}).get("manager"):
+            await run_tests_node_r(s)
+            if s.get("status") != "RUNNING" or not runtime.get(s["run_id"], {}).get("test_ok"):
+                s["status"] = "FAILED"
+                s["workflow_state"] = WorkflowState.FAILED.value
+                return s
         manager = (runtime.get(s["run_id"]) or {}).get("manager")
         if manager is None:
             s["status"] = AgentRunStatus.FAILED.value
@@ -973,7 +1046,7 @@ async def _run_with_langgraph(
             async with get_session_factory()() as guard_session:
                 await fence(guard_session, s["run_id"])
                 await guard_session.commit()
-            gateway.budget.tool_call_count = max(gateway.budget.tool_call_count, len(s.get("tool_calls") or []))
+            gateway.budget.tool_call_count = max(gateway.budget.tool_call_count, sum(c.get("attempt_count", 1) for c in (s.get("tool_calls") or [])))
             gateway.budget.step_count = max(gateway.budget.step_count, (s.get("result") or {}).get("investigation_steps", 0))
             outcome = await node(s)
             if not approval:
@@ -1003,7 +1076,7 @@ async def _run_with_langgraph(
         route_after_collect,
         {"form_hypothesis": "form_hypothesis", "end": END},
     )
-    builder.add_edge("form_hypothesis", "verify_hypothesis")
+    builder.add_conditional_edges("form_hypothesis", lambda s: "verify" if s.get("status") == "RUNNING" else "end", {"verify": "verify_hypothesis", "end": END})
     builder.add_conditional_edges(
         "verify_hypothesis",
         route_after_verify,
@@ -1074,6 +1147,7 @@ async def _run_with_langgraph(
     finally:
         for handles in runtime.values():
             handles["manager"].destroy_workspace(state["run_id"])
+    result["result"] = {**(result.get("result") or {}), "token_usage": getattr(provider, "usage_totals", None)}
     return dict(result)
 
 

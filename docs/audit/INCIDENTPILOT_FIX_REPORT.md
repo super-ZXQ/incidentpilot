@@ -23,3 +23,15 @@
 - graph 所有退出路径清理工作目录，恢复不会重复插入 TestRun。
 
 验证：审计安全/可靠性、Worker、P1 resilience、审批和幂等相关 **72 passed，3 个预期本地执行警告，16.16 秒**。GitHub Crash/429/503 为 Mock HTTP，不是真实 GitHub 成功案例。长于 60 秒的心跳、专用 PostgreSQL 和 Docker 行为实验将在最终验收补记。
+
+## P1 MCP、证据与评测阶段
+
+- MCP/Gateway 拒绝 isError、业务 error、异常 JSON、空、多结果块、partial/truncated 和超大输出；输入按 schema、长度、范围校验；实际重试计入调用预算。MCP 子进程只获得专用 reference 配置；工具输出和审计日志有界并脱敏。
+- SQL 保留 sqlglot，增加参考 schema 的表/列/函数许可、系统表/未知函数/CTE 拒绝、执行 LIMIT、DB 只读角色和写权限检查、statement/lock timeout。复杂 CTE 当前不支持，安全边界清晰。
+- 模型上下文统一为有界、脱敏、不可信 JSON；保留服务端工具权限；累计 provider 返回的真实 token usage，未返回用量则 null。启用模型但缺 key 会失败。
+- Evidence 必须关联当前 run 成功调用、内容/hash 一致；去重并要求新独立验证来源；验证失败立即结束，结论必须引用验证证据。评分不再把非空 ID 当作支持。语义因果和相关性仍需真实模型及独立审阅，不编造数值。
+- 保留原八例，新增十二个独立 fault case（池等待/缓存回退/代码异常及九种数据/响应契约回归），共二十例。它们是受控 fault injector 的模拟场景，不能当真实 PostgreSQL 优化案例。新增 A 单次固定上下文、B 固定工具、C 自主工具三个策略，复用统一 scorer；P50/P95、产物生成/应用/测试/真实 PR 分开报告。
+- 发现并修复 A16 的验收盲点：独立 fault-active oracle 只读挂载在候选目录外。健康测试通过不再计作完整修复准备；三类候选的实际结果保存在离线实验产物。
+- 追加 ORM 产物/审批不可变保护、受保护源码干净 base 校验、checkpoint 沙箱 runtime 丢失时重建并重新测试、PostgreSQL 用 DB 时钟校验租约。
+
+验证：相关安全、工具、证据、状态、恢复和 Docker 回归 **115 passed，3 个预期警告，20.19 秒**；二十例 lifecycle 与 reference 测试 **23 passed，1 个依赖警告，3.66 秒**。专用 PostgreSQL 迁移和原有三项集成通过；新增长测试/接管 **2 passed，64.07 秒**。详细测试含义见安全报告，最终全量结果后补。

@@ -31,6 +31,14 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+async def database_now(session: AsyncSession, override: datetime | None = None) -> datetime:
+    if override is not None:
+        return override
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        return await session.scalar(select(func.clock_timestamp()))
+    return utcnow()
+
+
 async def create_incident_and_run(
     session: AsyncSession,
     *,
@@ -85,7 +93,7 @@ async def claim_next_run(
     run_id: str | None = None,
 ) -> ClaimedRun | None:
     """Atomically claim one pending or lease-expired run."""
-    current = now or utcnow()
+    current = await database_now(session, now)
     eligible = or_(
         (
             (AgentRun.status == AgentRunStatus.PENDING.value)
@@ -137,7 +145,7 @@ async def renew_lease(
     now: datetime | None = None,
     attempt_count: int | None = None,
 ) -> bool:
-    current = now or utcnow()
+    current = await database_now(session, now)
     result = await session.execute(
         update(AgentRun)
         .where(
@@ -224,7 +232,7 @@ async def expire_exhausted_runs(
     max_attempts: int,
     now: datetime | None = None,
 ) -> int:
-    current = now or utcnow()
+    current = await database_now(session, now)
     result = await session.execute(
         update(AgentRun)
         .where(

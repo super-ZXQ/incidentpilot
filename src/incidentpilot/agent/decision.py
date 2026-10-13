@@ -19,6 +19,7 @@ from incidentpilot.llm.schemas import (
     ToolSelection,
     VerificationDecision,
 )
+from incidentpilot.tools.data import DATA_POLICY, untrusted_context
 
 READONLY_TOOLS = (
     "read_metrics",
@@ -52,7 +53,10 @@ def _context(incident: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
         }
         for e in evidence
     ]
-    return json.dumps({"incident": incident, "evidence": safe_evidence}, default=str)
+    unique = {}
+    for item in safe_evidence:
+        unique.setdefault(json.dumps(item["result"], sort_keys=True, default=str), item)
+    return untrusted_context({"incident": incident, "evidence": list(unique.values())})
 
 
 class AgentDecisionModel:
@@ -76,8 +80,8 @@ class AgentDecisionModel:
             )
         return await self.provider.complete_structured(
             InvestigationPlan,
-            [LLMMessage("user", json.dumps(incident, default=str))],
-            system="Plan an incident investigation. Do not claim a root cause yet.",
+            [LLMMessage("user", untrusted_context(incident))],
+            system="Plan an incident investigation. Do not claim a root cause yet." + DATA_POLICY,
         )  # type: ignore[return-value]
 
     async def next_action(
@@ -131,7 +135,7 @@ class AgentDecisionModel:
                 + ". Never invent evidence IDs. Prefer a new evidence source over repeating a "
                 "successful source. After at least two useful independent observations, form a "
                 "falsifiable hypothesis.\n"
-                + TOOL_ARGUMENT_GUIDE
+                + TOOL_ARGUMENT_GUIDE + DATA_POLICY
             ),
         )  # type: ignore[return-value]
 
@@ -159,7 +163,7 @@ class AgentDecisionModel:
         return await self.provider.complete_structured(
             HypothesisProposal,
             [LLMMessage("user", _context(incident, evidence))],
-            system="Propose one falsifiable hypothesis and cite only supplied evidence IDs.",
+            system="Propose one falsifiable hypothesis and cite only supplied evidence IDs." + DATA_POLICY,
         )  # type: ignore[return-value]
 
     async def verification_action(
@@ -189,7 +193,7 @@ class AgentDecisionModel:
                 "Prefer a source independent from the evidence already cited. Allowed tools: "
                 + ", ".join(READONLY_TOOLS)
                 + ".\n"
-                + TOOL_ARGUMENT_GUIDE
+                + TOOL_ARGUMENT_GUIDE + DATA_POLICY
             ),
         )
         if action.tool_selection is None:
@@ -215,16 +219,10 @@ class AgentDecisionModel:
             [
                 LLMMessage(
                     "user",
-                    json.dumps(
-                        {
-                            "hypothesis": hypothesis.model_dump(),
-                            "evidence": evidence,
-                        },
-                        default=str,
-                    ),
+                    untrusted_context({"hypothesis": hypothesis.model_dump(), "evidence": evidence}),
                 )
             ],
-            system="Decide whether the new evidence confirms or rejects the hypothesis.",
+            system="Decide whether the new evidence confirms or rejects the hypothesis." + DATA_POLICY,
         )  # type: ignore[return-value]
 
     async def conclude(
@@ -247,16 +245,13 @@ class AgentDecisionModel:
             [
                 LLMMessage(
                     "user",
-                    json.dumps(
-                        {"incident": incident, "hypothesis": hypothesis.model_dump(), "evidence": evidence},
-                        default=str,
-                    ),
+                    untrusted_context({"incident": incident, "hypothesis": hypothesis.model_dump(), "evidence": evidence}),
                 )
             ],
             system=(
                 "Conclude only from the verified hypothesis and cite supplied evidence IDs. "
                 "Use one fault_category from this stable taxonomy: database_performance, "
-                "application_bug, dependency, data_contract, configuration, code_regression."
+                "application_bug, dependency, data_contract, configuration, code_regression." + DATA_POLICY
             ),
         )  # type: ignore[return-value]
 
@@ -267,9 +262,18 @@ class AgentDecisionModel:
             raise RuntimeError("deterministic patching is a test-only adapter")
         return await self.provider.complete_structured(
             PatchProposal,
-            [LLMMessage("user", json.dumps(context, default=str))],
+            [LLMMessage("user", untrusted_context(context))],
             system=(
                 "Produce a minimal unified diff. Do not modify .git, secrets, credentials, "
-                "environment files, or paths outside the repository."
+                "environment files, or paths outside the repository." + DATA_POLICY
             ),
         )  # type: ignore[return-value]
+
+    async def direct_conclusion(self, incident, evidence) -> RootCauseConclusion:
+        if self.deterministic:
+            hypothesis = await self.propose_hypothesis(incident, evidence)
+            return await self.conclude(incident, hypothesis, evidence)
+        return await self.provider.complete_structured(
+            RootCauseConclusion, [LLMMessage("user", _context(incident, evidence))],
+            system="Diagnose once from the fixed context and cite supplied evidence IDs. Use taxonomy: database_performance, application_bug, dependency, data_contract, configuration, code_regression." + DATA_POLICY,
+        )

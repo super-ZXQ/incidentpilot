@@ -23,6 +23,7 @@
 | A13 / 012–013 | Medium / CONFIRMED | 只有八个 YAML；无 A/B/C 统一对照；Fake patch 固定移除两个延迟分支，不能证明 null/config 修复。 | 作品集能力被高估。保留历史八例；扩展独立场景与统一实验记录；失败如实保留。 |
 | A14 / 014–015 | Medium / CONFIRMED | 无调查演示页面；现有报告是历史运行，不能作为本次验收。 | 增加轻量同源页面，输出本次机器可读测试/评测和限制。 |
 | A15 | Low / NOT_APPLICABLE | 没有 Redis/Celery/Multi-Agent/RAG，当前任务无需引入。 | 保留单 Agent、PostgreSQL、MCP stdio 架构。 |
+| A16 / 013 | High / CONFIRMED | `run_tests_node_r` 使用 `pytest_regression`，该测试先 reset_fault；即使 null/config 未修复也可通过。 | 新增独立 fault-active oracle，并在评测/页面标明 test_scope，禁止把健康回归解释为真正解决故障。 |
 
 ## 基线与环境
 

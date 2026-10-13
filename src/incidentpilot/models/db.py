@@ -6,7 +6,17 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+    inspect,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from incidentpilot.models.enums import (
@@ -254,3 +264,10 @@ class ExternalSideEffect(Base):
     __table_args__ = (
         UniqueConstraint("run_pk", "effect_type", name="ux_side_effect_run_type"),
     )
+
+
+@event.listens_for(PatchArtifact, "before_update")
+@event.listens_for(Approval, "before_update")
+def reject_immutable_update(mapper, connection, target):
+    if any(attribute.history.has_changes() for attribute in inspect(target).attrs):
+        raise ValueError("persisted artifact and approval records are immutable")
