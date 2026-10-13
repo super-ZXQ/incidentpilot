@@ -31,6 +31,14 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+async def database_now(session: AsyncSession, override: datetime | None = None) -> datetime:
+    if override is not None:
+        return override
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        return await session.scalar(select(func.clock_timestamp()))
+    return utcnow()
+
+
 async def create_incident_and_run(
     session: AsyncSession,
     *,
@@ -59,6 +67,7 @@ async def create_incident_and_run(
         repository=incident_data.get("repository", ""),
         environment=incident_data.get("environment", "reference-production"),
         payload=incident_data.get("payload") or {},
+        owner_id=incident_data.get("owner_id"),
     )
     run = AgentRun(
         run_id=repo.new_id("RUN"),
@@ -84,7 +93,7 @@ async def claim_next_run(
     run_id: str | None = None,
 ) -> ClaimedRun | None:
     """Atomically claim one pending or lease-expired run."""
-    current = now or utcnow()
+    current = await database_now(session, now)
     eligible = or_(
         (
             (AgentRun.status == AgentRunStatus.PENDING.value)
@@ -134,14 +143,17 @@ async def renew_lease(
     worker_id: str,
     lease_seconds: int,
     now: datetime | None = None,
+    attempt_count: int | None = None,
 ) -> bool:
-    current = now or utcnow()
+    current = await database_now(session, now)
     result = await session.execute(
         update(AgentRun)
         .where(
             AgentRun.run_id == run_id,
             AgentRun.status == AgentRunStatus.RUNNING.value,
             AgentRun.worker_id == worker_id,
+            AgentRun.lease_expires_at > current,
+            *([AgentRun.attempt_count == attempt_count] if attempt_count is not None else []),
         )
         .values(
             last_heartbeat_at=current,
@@ -157,10 +169,12 @@ async def release_claim(
     *,
     run_id: str,
     worker_id: str,
+    attempt_count: int | None = None,
 ) -> bool:
     result = await session.execute(
         update(AgentRun)
-        .where(AgentRun.run_id == run_id, AgentRun.worker_id == worker_id)
+        .where(AgentRun.run_id == run_id, AgentRun.worker_id == worker_id,
+               *([AgentRun.attempt_count == attempt_count] if attempt_count is not None else []))
         .values(worker_id=None, lease_expires_at=None, last_heartbeat_at=None)
     )
     await session.commit()
@@ -175,15 +189,24 @@ async def retry_claim(
     max_attempts: int,
     failure_category: str,
     delay_seconds: float,
+    attempt_count: int | None = None,
 ) -> str:
     run = (
         await session.execute(
             select(AgentRun)
-            .where(AgentRun.run_id == run_id, AgentRun.worker_id == worker_id)
+            .where(AgentRun.run_id == run_id, AgentRun.worker_id == worker_id,
+               *([AgentRun.attempt_count == attempt_count] if attempt_count is not None else []))
             .with_for_update()
         )
     ).scalar_one_or_none()
     if run is None:
+        await session.rollback()
+        return "LOST_LEASE"
+    if run.status != AgentRunStatus.RUNNING.value:
+        await session.rollback()
+        return run.status
+    expiry = run.lease_expires_at
+    if expiry is None or expiry.replace(tzinfo=UTC) <= utcnow():
         await session.rollback()
         return "LOST_LEASE"
     run.worker_id = None
@@ -209,7 +232,7 @@ async def expire_exhausted_runs(
     max_attempts: int,
     now: datetime | None = None,
 ) -> int:
-    current = now or utcnow()
+    current = await database_now(session, now)
     result = await session.execute(
         update(AgentRun)
         .where(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 import uuid
 
@@ -12,6 +13,10 @@ class IncidentPilotUser(HttpUser):
     wait_time = between(0.2, 1.0)
 
     def on_start(self) -> None:
+        token = os.environ.get("LOAD_API_TOKEN")
+        if not token:
+            raise RuntimeError("LOAD_API_TOKEN must be a configured test credential")
+        self.client.headers["Authorization"] = f"Bearer {token}"
         self.run_ids: list[str] = []
 
     @task(3)

@@ -32,7 +32,7 @@ Expired leases are recoverable until `MAX_JOB_ATTEMPTS`; exhausted jobs become
 
 - No Redis, Celery, Kafka, or new operational datastore is required.
 - PostgreSQL is a coordination bottleneck by design; polling and row locking are appropriate for
-  the portfolio/reference workload.
+  the reference workload.
 - This supports a small number of worker processes, not unlimited horizontal scale.
 - Long workflow nodes must remain below the lease duration or maintain heartbeats.
 - Correctness of remote effects depends on stable idempotency keys and provider-side lookup.

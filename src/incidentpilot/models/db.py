@@ -6,7 +6,17 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+    inspect,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from incidentpilot.models.enums import (
@@ -39,6 +49,7 @@ class Incident(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     incident_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     title: Mapped[str] = mapped_column(String(256))
     service: Mapped[str] = mapped_column(String(128), index=True)
     severity: Mapped[str] = mapped_column(String(16), default=Severity.SEV3.value)
@@ -198,6 +209,9 @@ class TestRun(Base):
     stderr: Mapped[str] = mapped_column(Text, default="")
     duration_ms: Mapped[float | None] = mapped_column(nullable=True)
     command: Mapped[str] = mapped_column(String(512), default="pytest")
+    patch_hash: Mapped[str] = mapped_column(String(64), default="")
+    base_commit_sha: Mapped[str] = mapped_column(String(64), default="")
+    mode: Mapped[str] = mapped_column(String(32), default="unknown")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
@@ -250,3 +264,10 @@ class ExternalSideEffect(Base):
     __table_args__ = (
         UniqueConstraint("run_pk", "effect_type", name="ux_side_effect_run_type"),
     )
+
+
+@event.listens_for(PatchArtifact, "before_update")
+@event.listens_for(Approval, "before_update")
+def reject_immutable_update(mapper, connection, target):
+    if any(attribute.history.has_changes() for attribute in inspect(target).attrs):
+        raise ValueError("persisted artifact and approval records are immutable")

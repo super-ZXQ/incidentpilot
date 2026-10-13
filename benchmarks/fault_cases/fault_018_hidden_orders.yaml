@@ -1,0 +1,28 @@
+id: fault_018_hidden_orders
+title: The listing response is replaced with an empty collection.
+category: configuration
+difficulty: simple
+fault_type: hidden_orders
+params: {}
+incident:
+  title: Orders listing regression 18
+  service: orders-api
+  severity: SEV2
+  symptom: Orders listing differs from its established latency or response contract.
+  environment: reference-production
+  repository: reference/orders_api
+ground_truth:
+  fault_category: configuration
+  affected_component: orders-api /orders handler
+  root_cause: The listing response is replaced with an empty collection.
+  causal_facts:
+  - loaded orders are discarded
+  - response is empty despite seeded orders
+expected_evidence_sources:
+- read_metrics
+- read_logs
+- read_source_code
+expected_fix_behavior:
+  must_pass_tests: true
+  notes: Reproduce with the fault active and compare response and latency to healthy
+    behavior; healthy-only tests are insufficient.

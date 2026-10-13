@@ -1,0 +1,21 @@
+{
+  "date": "2026-10-13",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.12.6",
+  "dependencies": {
+    "langgraph": "1.2.11",
+    "mcp": "1.30.0",
+    "sqlalchemy": "2.0.54",
+    "psycopg": "3.3.5",
+    "pytest": "9.1.1",
+    "fastapi": "0.141.1",
+    "sqlglot": "30.18.0"
+  },
+  "docker_version": "29.5.2",
+  "sandbox_image": "sha256:b6fd2ee49867645b7b1262d9b4e9c3ba464835009b5ab89700d54973121d1278",
+  "credentials": {
+    "real_model": "NOT_RUN: no API Key",
+    "real_github": "NOT_RUN: no authorized test repository"
+  },
+  "postgres": "disposable postgres:16-alpine container, random loopback port; no host production databases touched"
+}

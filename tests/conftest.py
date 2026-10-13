@@ -25,6 +25,15 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
+@pytest.fixture(autouse=True)
+def explicit_test_execution(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("SANDBOX_ENABLED", "false")
+    reset_settings_cache()
+    yield
+    reset_settings_cache()
+
+
 def pytest_asyncio_loop_factories(config, item):
     del config, item
     if sys.platform == "win32":
@@ -56,6 +65,7 @@ async def client(tmp_path) -> AsyncIterator[AsyncClient]:
 
     import os
 
+    os.environ["API_TOKENS"] = '{"test-admin-token":{"subject":"test-admin","role":"admin"}}'
     os.environ["DATABASE_URL"] = url
     os.environ["TOOL_BACKEND"] = "fake"
     os.environ["EMBEDDED_WORKER_ENABLED"] = "true"
@@ -67,7 +77,7 @@ async def client(tmp_path) -> AsyncIterator[AsyncClient]:
     await init_db(url)
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": "Bearer test-admin-token"}) as ac:
         yield ac
 
     from incidentpilot.agent.executor import reset_run_executor

@@ -38,3 +38,8 @@ reference/**/__pycache__/
 
 # Docker
 .docker-cache/
+
+# Local browser inspection artifacts
+.playwright-cli/
+.impeccable/review/
+output/playwright/

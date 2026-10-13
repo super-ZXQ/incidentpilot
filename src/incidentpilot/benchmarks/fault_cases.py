@@ -20,6 +20,16 @@ REGISTERED_FAULT_TYPES = {
     "cache_failure",
     "incorrect_configuration",
     "bad_query_refactor",
+    "pagination_off_by_one",
+    "duplicate_orders",
+    "missing_items",
+    "wrong_customer",
+    "wrong_total",
+    "reversed_orders",
+    "hidden_orders",
+    "invalid_status",
+    "inflated_price",
+
 }
 
 
@@ -38,6 +48,7 @@ class FaultCase(BaseModel):
     title: str
     category: str
     fault_type: str
+    difficulty: str = "medium"
     params: dict[str, Any] = Field(default_factory=dict)
     incident: dict[str, Any] = Field(default_factory=dict)
     ground_truth: FaultGroundTruth

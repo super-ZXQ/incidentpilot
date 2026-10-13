@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from incidentpilot.agent.evidence import content_hash
 from incidentpilot.eval.scoring import score_structured_root_cause
+
+
+def score(ground_truth, root_cause):
+    ids = root_cause.get("evidence_ids", [])
+    evidence = [{"evidence_id": eid, "run_id": "run", "tool_call_id": eid, "result": {"observation": eid}, "hash": content_hash({"observation": eid})} for eid in ids]
+    calls = [{"tool_call_id": eid, "status": "SUCCEEDED", "output": {"observation": eid}} for eid in ids]
+    return score_structured_root_cause(ground_truth, root_cause, evidence=evidence, tool_calls=calls, run_id="run")
 
 
 def test_structured_scoring_prefers_category_and_component() -> None:
@@ -25,8 +33,8 @@ def test_structured_scoring_prefers_category_and_component() -> None:
         "causal_facts": [],
         "evidence_ids": [],
     }
-    assert score_structured_root_cause(gt, good)["structured_ok"] is True
-    assert score_structured_root_cause(gt, bad)["structured_ok"] is False
+    assert score(gt, good)["structured_ok"] is True
+    assert score(gt, bad)["structured_ok"] is False
 
 
 def test_structured_scoring_accepts_known_subtype_without_keyword_fallback() -> None:
@@ -42,6 +50,6 @@ def test_structured_scoring_accepts_known_subtype_without_keyword_fallback() -> 
         "causal_facts": ["per-order item query"],
         "evidence_ids": ["E1"],
     }
-    scores = score_structured_root_cause(gt, observed)
+    scores = score(gt, observed)
     assert scores["category_ok"] is True
     assert scores["structured_ok"] is True

@@ -1,0 +1,30 @@
+{
+  "timestamp_utc": "2026-10-13T06:05:48.572859+00:00",
+  "python": "3.12.6",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "fake_comparison": "EXECUTED",
+  "real_model_comparison": "NOT_RUN: no API Key",
+  "real_model_remediation": "NOT_RUN: no API Key",
+  "real_github": "NOT_RUN: no authorized dedicated repository",
+  "human_approval": "NOT_RUN: only simulated test decisions",
+  "offline_patch_attempts": [
+    {
+      "case": "fault_002_slow_database_query",
+      "status": "WAITING_APPROVAL",
+      "test_status": "PASSED",
+      "approval": "NOT_RUN"
+    },
+    {
+      "case": "fault_003_null_exception_orders",
+      "status": "NEEDS_HUMAN_INTERVENTION",
+      "test_status": "FAILED",
+      "approval": "NOT_RUN"
+    },
+    {
+      "case": "fault_007_incorrect_timeout_configuration",
+      "status": "NEEDS_HUMAN_INTERVENTION",
+      "test_status": "FAILED",
+      "approval": "NOT_RUN"
+    }
+  ]
+}

@@ -119,12 +119,13 @@ async def test_queue_full_returns_stable_429(tmp_path, monkeypatch) -> None:
     settings = Settings(
         database_url=url,
         embedded_worker_enabled=False,
+        api_tokens={"test-admin-token": {"subject": "test-admin", "role": "admin"}},
         max_queued_runs=1,
         tool_backend="fake",
     )
     await init_db(url)
     async with AsyncClient(
-        transport=ASGITransport(app=create_app(settings)), base_url="http://test"
+        transport=ASGITransport(app=create_app(settings)), base_url="http://test", headers={"Authorization": "Bearer test-admin-token"}
     ) as client:
         body = {"title": "one", "service": "orders-api", "symptom": "latency"}
         assert (await client.post("/v1/incidents", json=body)).status_code == 202

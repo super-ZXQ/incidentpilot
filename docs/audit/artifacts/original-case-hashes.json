@@ -1,0 +1,10 @@
+{
+  "fault_001_n_plus_one_orders.yaml": "bb8c601cca9b4698e45965c9c63541a6c61724b42e98c9b9eb5da7b4a0a9a1a4",
+  "fault_002_slow_database_query.yaml": "9ff589775d22425a252be1dda6df4275e8fc960928a72d81622b0234e435a544",
+  "fault_003_null_exception_orders.yaml": "457c519a1c81681c1cc656be62cb8b5eea5c983bbbf00fe6782e8653b9b273be",
+  "fault_004_missing_database_index.yaml": "d90e03ca1c764a9658627ebe4f919847deff3482c4739f2f475345799c7db22b",
+  "fault_005_dependency_timeout.yaml": "2910c4d7446ceb2082dd1171c32c5ce659fb5dae905443166fb5658126d1a264",
+  "fault_006_schema_mismatch.yaml": "75a3341c1dcd276fa8f4dae79c8a3369282cd27acfe019111ae2a84923c632dd",
+  "fault_007_incorrect_timeout_configuration.yaml": "4570c0b19c4adb7def97dd588d346601b77a8a953ddb2d8fc43615ca64c46db4",
+  "fault_008_bad_query_refactor.yaml": "f7972092f0947efe0518e664dbed07d8c9284f238b3fada1d9917f23f9108e3c"
+}

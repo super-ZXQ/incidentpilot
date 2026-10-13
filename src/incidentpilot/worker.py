@@ -36,6 +36,7 @@ from incidentpilot.persistence.jobs import (
     retry_claim,
 )
 from incidentpilot.persistence.session import get_session_factory
+from incidentpilot.services.incidents import RunService
 
 logger = logging.getLogger(__name__)
 
@@ -105,11 +106,16 @@ class DurableWorker:
                     )
 
         if self._active:
+            for task in self._active:
+                task.cancel()
             await asyncio.gather(*self._active, return_exceptions=True)
 
     async def _execute_claim(self, claim: ClaimedRun) -> None:
         factory = get_session_factory()
-        heartbeat = asyncio.create_task(self._heartbeat(claim.run_id))
+        from incidentpilot.persistence.ownership import current_claim
+
+        token = current_claim.set(claim)
+        heartbeat = asyncio.create_task(self._heartbeat(claim.run_id, claim.attempt_count))
         execution = asyncio.create_task(self._resume_or_execute(claim))
         started = time.perf_counter()
         ACTIVE_RUNS.inc()
@@ -129,10 +135,20 @@ class DurableWorker:
             RUNS.labels(status=str(result.get("status", "UNKNOWN"))).inc()
             async with factory() as session:
                 await release_claim(
-                    session, run_id=claim.run_id, worker_id=self.worker_id
+                    session, run_id=claim.run_id, worker_id=self.worker_id, attempt_count=claim.attempt_count
                 )
         except Exception as exc:
             logger.exception("worker execution failed for %s", claim.run_id)
+            if isinstance(exc, (ValueError, TypeError)):
+                async with factory() as session:
+                    run = await RunService(session).get(claim.run_id)
+                    if run is not None:
+                        await RunService(session).mark_status(
+                            run, AgentRunStatus.NEEDS_HUMAN_INTERVENTION,
+                            workflow_state="NEEDS_HUMAN_INTERVENTION",
+                            error=str(exc)[:2000], finished=True,
+                        )
+                return
             RUN_RETRIES.inc()
             delay = min(30.0, 2.0 ** max(0, claim.attempt_count - 1))
             async with factory() as session:
@@ -143,11 +159,13 @@ class DurableWorker:
                     max_attempts=self.settings.max_job_attempts,
                     failure_category=type(exc).__name__,
                     delay_seconds=delay,
+                    attempt_count=claim.attempt_count,
                 )
         finally:
             execution.cancel()
             heartbeat.cancel()
             await asyncio.gather(execution, heartbeat, return_exceptions=True)
+            current_claim.reset(token)
             ACTIVE_RUNS.dec()
             RUN_DURATION.observe(time.perf_counter() - started)
 
@@ -183,7 +201,7 @@ class DurableWorker:
             recover=claim.recover,
         )
 
-    async def _heartbeat(self, run_id: str) -> None:
+    async def _heartbeat(self, run_id: str, attempt_count: int | None = None) -> None:
         factory = get_session_factory()
         while True:
             await asyncio.sleep(self.settings.job_heartbeat_seconds)
@@ -193,6 +211,7 @@ class DurableWorker:
                     run_id=run_id,
                     worker_id=self.worker_id,
                     lease_seconds=self.settings.job_lease_seconds,
+                    attempt_count=attempt_count,
                 )
             if not owned:
                 logger.warning("worker %s lost lease for %s", self.worker_id, run_id)

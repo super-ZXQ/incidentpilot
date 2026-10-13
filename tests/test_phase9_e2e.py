@@ -21,6 +21,7 @@ async def test_e2e_full_loop_investigate_fix_approve_pr(tmp_path) -> None:
     """Fault Case -> Incident -> Agent -> Evidence -> Root Cause -> Patch -> Tests -> Approval -> PR."""
     reset_db_state()
     reset_settings_cache()
+    os.environ["API_TOKENS"] = '{"test-admin-token":{"subject":"test-admin","role":"admin"}}'
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_path / 'e2e.db'}"
     os.environ["OTEL_CONSOLE_EXPORTER"] = "false"
     os.environ["GITHUB_INTEGRATION_ENABLED"] = "false"
@@ -40,7 +41,7 @@ async def test_e2e_full_loop_investigate_fix_approve_pr(tmp_path) -> None:
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test", headers={"Authorization": "Bearer test-admin-token"}) as client:
         resp = await client.post("/v1/incidents", json=case.incident)
         assert resp.status_code == 202
         data = resp.json()
@@ -84,6 +85,7 @@ async def test_e2e_full_loop_investigate_fix_approve_pr(tmp_path) -> None:
 async def test_real_benchmark_harness_multiple_cases(tmp_path) -> None:
     reset_db_state()
     reset_settings_cache()
+    os.environ["API_TOKENS"] = '{"test-admin-token":{"subject":"test-admin","role":"admin"}}'
     os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tmp_path / 'bench.db'}"
     os.environ["OTEL_CONSOLE_EXPORTER"] = "false"
     reset_settings_cache()

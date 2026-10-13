@@ -61,7 +61,7 @@ Traceback (most recent call last):
   File "D:\incidentpilot\.venv\Lib\site-packages\starlette\routing.py", line 648, in lifespan
     async with self.lifespan_context(app) as maybe_state:
                ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\26811\AppData\Local\Programs\Python\Python312\Lib\contextlib.py", line 210, in __aenter__
+  File "C:\Users\REDACTED\AppData\Local\Programs\Python\Python312\Lib\contextlib.py", line 210, in __aenter__
     return await anext(self.gen)
            ^^^^^^^^^^^^^^^^^^^^^
   File "D:\incidentpilot\src\incidentpilot\api\app.py", line 47, in lifespan
@@ -69,7 +69,7 @@ Traceback (most recent call last):
   File "D:\incidentpilot\src\incidentpilot\persistence\session.py", line 52, in init_db
     async with engine.begin() as conn:
                ^^^^^^^^^^^^^^
-  File "C:\Users\26811\AppData\Local\Programs\Python\Python312\Lib\contextlib.py", line 210, in __aenter__
+  File "C:\Users\REDACTED\AppData\Local\Programs\Python\Python312\Lib\contextlib.py", line 210, in __aenter__
     return await anext(self.gen)
            ^^^^^^^^^^^^^^^^^^^^^
   File "D:\incidentpilot\.venv\Lib\site-packages\sqlalchemy\ext\asyncio\engine.py", line 1068, in begin

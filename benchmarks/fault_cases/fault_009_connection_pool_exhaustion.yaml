@@ -1,0 +1,29 @@
+id: fault_009_connection_pool_exhaustion
+title: A pool exhaustion simulation adds blocking wait to orders listing.
+category: database_performance
+difficulty: complex
+fault_type: connection_pool_exhaustion
+params:
+  delay_seconds: 0.15
+incident:
+  title: Orders listing regression 9
+  service: orders-api
+  severity: SEV2
+  symptom: Orders listing differs from its established latency or response contract.
+  environment: reference-production
+  repository: reference/orders_api
+ground_truth:
+  fault_category: database_performance
+  affected_component: orders-api /orders handler
+  root_cause: A pool exhaustion simulation adds blocking wait to orders listing.
+  causal_facts:
+  - pool exhaustion fault adds a blocking delay
+  - listing latency increases
+expected_evidence_sources:
+- read_metrics
+- read_logs
+- read_source_code
+expected_fix_behavior:
+  must_pass_tests: true
+  notes: Reproduce with the fault active and compare response and latency to healthy
+    behavior; healthy-only tests are insufficient.

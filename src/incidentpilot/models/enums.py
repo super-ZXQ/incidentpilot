@@ -102,6 +102,16 @@ TERMINAL_RUN_STATUSES = {
     AgentRunStatus.FAILED,
 }
 
+# Only these status transitions are legal; terminal states are absorbing.
+RUN_TRANSITIONS = {
+    AgentRunStatus.PENDING: {AgentRunStatus.RUNNING, AgentRunStatus.FAILED},
+    AgentRunStatus.RUNNING: {AgentRunStatus.RUNNING, AgentRunStatus.PENDING,
+                           AgentRunStatus.WAITING_APPROVAL, *TERMINAL_RUN_STATUSES},
+    AgentRunStatus.WAITING_APPROVAL: {AgentRunStatus.RUNNING,
+                                    AgentRunStatus.NEEDS_HUMAN_INTERVENTION},
+    **{status: {status} for status in TERMINAL_RUN_STATUSES},
+}
+
 # Read-only external tools (MCP boundary)
 READONLY_TOOL_NAMES = (
     "read_metrics",

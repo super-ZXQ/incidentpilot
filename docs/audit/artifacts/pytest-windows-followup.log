@@ -1,0 +1,81 @@
+F..sssss.........F.......F.............................................. [ 35%]
+........................................................................ [ 70%]
+.................F.............F....FF...s.ssss..............            [100%]
+================================== FAILURES ===================================
+E   AssertionError: assert 'FAILED' == 'WAITING_APPROVAL'
+
+      - WAITING_APPROVAL
+      + FAILED
+D:\incidentpilot\tests\test_approval_idempotency.py:33: AssertionError: assert 'FAILED' == 'WAITING_APPROVAL'
+E   TypeError: argument of type 'NoneType' is not iterable
+D:\incidentpilot\tests\test_audit_reliability.py:88: TypeError: argument of type 'NoneType' is not iterable
+E   AssertionError: run tests failed: test execution changed approved workspace content
+    assert 'FAILED' == 'WAITING_APPROVAL'
+
+      - WAITING_APPROVAL
+      + FAILED
+D:\incidentpilot\tests\test_audit_reliability.py:225: AssertionError: run tests failed: test execution changed approved workspace content
+E   AssertionError: assert 'FAILED' in {'NEEDS_HUMAN_INTERVENTION', 'WAITING_APPROVAL'}
+D:\incidentpilot\tests\test_phase2_gateway.py:106: AssertionError: assert 'FAILED' in {'NEEDS_HUMAN_INTERVENTION', 'WAITING_APPROVAL'}
+E   ValueError: test execution changed approved workspace content
+D:\incidentpilot\src\incidentpilot\sandbox\manager.py:354: ValueError: test execution changed approved workspace content
+E   AssertionError: assert 'FAILED' == 'WAITING_APPROVAL'
+
+      - WAITING_APPROVAL
+      + FAILED
+D:\incidentpilot\tests\test_phase7_approval.py:66: AssertionError: assert 'FAILED' == 'WAITING_APPROVAL'
+E   AssertionError: assert 'FAILED' == 'WAITING_APPROVAL'
+
+      - WAITING_APPROVAL
+      + FAILED
+D:\incidentpilot\tests\test_phase7_approval.py:104: AssertionError: assert 'FAILED' == 'WAITING_APPROVAL'
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\incidentpilot\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_approval_idempotency.py: 1 warning
+tests/test_audit_reliability.py: 1 warning
+tests/test_phase1_core.py: 1 warning
+tests/test_phase2_gateway.py: 1 warning
+tests/test_phase5_reasoning.py: 1 warning
+tests/test_phase6_sandbox.py: 1 warning
+tests/test_phase7_approval.py: 2 warnings
+tests/test_phase8_eval.py: 1 warning
+tests/test_phase9_e2e.py: 2 warnings
+  D:\incidentpilot\src\incidentpilot\agent\graph.py:948: RuntimeWarning: NON-ISOLATED local sandbox: development/test only
+    result = await manager.run_tests_async(s["run_id"], profile="pytest_fault" if settings.sandbox_fault_type else "pytest_regression", timeout=90)
+
+tests/test_audit_reliability.py::test_cancellation_reaps_process_and_keeps_loop_responsive
+  D:\incidentpilot\.venv\Lib\site-packages\_pytest\threadexception.py:58: PytestUnhandledThreadExceptionWarning: Exception in thread Thread-39 (_readerthread)
+
+  Traceback (most recent call last):
+    File "C:\Users\REDACTED\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1075, in _bootstrap_inner
+      self.run()
+    File "C:\Users\REDACTED\AppData\Local\Programs\Python\Python312\Lib\threading.py", line 1012, in run
+      self._target(*self._args, **self._kwargs)
+    File "C:\Users\REDACTED\AppData\Local\Programs\Python\Python312\Lib\subprocess.py", line 1599, in _readerthread
+      buffer.append(fh.read())
+                    ^^^^^^^^^
+    File "<frozen codecs>", line 322, in decode
+  UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd0 in position 0: invalid continuation byte
+
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnhandledThreadExceptionWarning(msg))
+
+tests/test_phase6_sandbox.py::test_apply_patch_and_run_pytest
+  C:\Users\REDACTED\AppData\Local\Programs\Python\Python312\Lib\asyncio\events.py:88: RuntimeWarning: NON-ISOLATED local sandbox: development/test only
+    self._context.run(self._callback, *self._args)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_approval_idempotency.py::test_double_approve_single_pr - As...
+FAILED tests/test_audit_reliability.py::test_cancellation_reaps_process_and_keeps_loop_responsive
+FAILED tests/test_audit_reliability.py::test_patch_retries_start_from_base_and_preserve_each_test_exit
+FAILED tests/test_phase2_gateway.py::test_agent_workflow_uses_tool_gateway - ...
+FAILED tests/test_phase6_sandbox.py::test_apply_patch_and_run_pytest - ValueE...
+FAILED tests/test_phase7_approval.py::test_approval_approve_creates_mock_pr
+FAILED tests/test_phase7_approval.py::test_approval_reject_needs_human - Asse...
+7 failed, 188 passed, 10 skipped, 14 warnings in 410.20s (0:06:50)
+EXIT=1

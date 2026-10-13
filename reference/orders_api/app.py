@@ -164,6 +164,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
         if ftype in {"slow_database_query", "dependency_timeout", "connection_pool_exhaustion"}:
             time.sleep(float(params.get("delay_seconds", 0.5)))
+        if ftype == "bad_code_commit":
+            raise ValueError(params.get("error_message", "serializer regression"))
         if ftype == "null_exception":
             raise RuntimeError(params.get("error_message", "null pointer in order serializer"))
         if ftype == "incorrect_configuration":
@@ -197,6 +199,29 @@ def create_app(database_url: str | None = None) -> FastAPI:
                     items=items,
                 )
             )
+        if ftype == "pagination_off_by_one":
+            result = result[:-1]
+        elif ftype == "duplicate_orders":
+            result = result + result
+        elif ftype == "missing_items":
+            for item in result:
+                item.items = []
+        elif ftype == "wrong_customer":
+            for item in result:
+                item.customer_id = 999
+        elif ftype == "wrong_total":
+            for item in result:
+                item.total_cents = -1
+        elif ftype == "reversed_orders":
+            result.reverse()
+        elif ftype == "hidden_orders":
+            result = []
+        elif ftype == "invalid_status":
+            for item in result:
+                item.status = "unknown"
+        elif ftype == "inflated_price":
+            for item in result:
+                item.total_cents *= 100
         return result
 
     @app.get("/orders", response_model=list[OrderOut])

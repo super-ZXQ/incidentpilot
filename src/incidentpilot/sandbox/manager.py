@@ -5,6 +5,7 @@ Agent never gets an unrestricted shell. Commands come from server-side policy.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -13,6 +14,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Server-side allowlisted test commands (not LLM-generated)
 ALLOWED_TEST_COMMANDS = {
     "pytest": ["python", "-m", "pytest", "-q", "--tb=short"],
+    "pytest_fault": ["python", "-m", "pytest", "-q", "--tb=short", "-p", "no:cacheprovider", "../checks/test_fault_active.py"],
     # Regression profile: only healthy-path tests after a fix is applied
     "pytest_regression": [
         "python",
@@ -43,37 +46,54 @@ FORBIDDEN_PATCH_PARTS = {
     "secrets",
     "secret",
     "docker.sock",
+    "conftest.py",
+    ".gitattributes",
 }
 # The Docker socket cannot access Docker socket from the sandbox because it is
 # never mounted; the name is also denied as a patch target.
 
 
-def validate_patch_path(repo: Path, raw_path: str) -> Path:
-    """Resolve a patch target and reject escape or sensitive paths."""
-    normalized = raw_path.replace("\\", "/").removeprefix("a/").removeprefix("b/")
-    candidate = Path(normalized)
-    if candidate.is_absolute() or ".." in candidate.parts:
-        raise ValueError(f"unsafe patch path: {raw_path}")
-    lowered = {part.lower() for part in candidate.parts}
-    sensitive = any(
-        part in FORBIDDEN_PATCH_PARTS
-        or part.startswith(".env.")
-        or "credential" in part
-        or "secret" in part
-        for part in lowered
+def sensitive_path(raw_path: str) -> bool:
+    parts = raw_path.replace("\\", "/").lower().split("/")
+    return any(
+        part in FORBIDDEN_PATCH_PARTS | {".ssh", ".aws", ".azure", ".config", ".github", ".venv", "venv", "node_modules"}
+        or part.startswith(".env") or "credential" in part or "secret" in part
+        or "token" in part or part.endswith((".pem", ".key", ".p12", ".pfx"))
+        or part in {"id_rsa", "id_ed25519", "config.local", "private", ".netrc", ".npmrc", ".pypirc"}
+        for part in parts
     )
-    if sensitive:
+
+
+def validate_patch_path(repo: Path, raw_path: str) -> Path:
+    """Reject ambiguous Git/Windows paths and all symlink components."""
+    normalized = raw_path.replace("\\", "/")
+    if (not normalized or normalized.startswith(("/", "~")) or ":" in normalized
+            or any(part in {"", ".", ".."} for part in normalized.split("/"))
+            or any(ord(c) < 32 for c in normalized) or '"' in normalized):
+        raise ValueError(f"unsafe patch path: {raw_path}")
+    if sensitive_path(normalized):
         raise ValueError(f"forbidden patch path: {raw_path}")
-    resolved = (repo / candidate).resolve()
+    candidate = repo
+    for part in normalized.split("/"):
+        if part.rstrip(" .") != part:
+            raise ValueError("unsafe Windows path alias")
+        if part.split(".", 1)[0].upper() in {"CON", "PRN", "AUX", "NUL", "CLOCK$", *{f"COM{i}" for i in range(1, 10)}, *{f"LPT{i}" for i in range(1, 10)}}:
+            raise ValueError("unsafe Windows device path")
+        candidate = candidate / part
+        if candidate.is_symlink() or candidate.is_junction():
+            raise ValueError("symlink patch path forbidden")
+    resolved = candidate.resolve()
     if not resolved.is_relative_to(repo.resolve()):
         raise ValueError(f"patch path outside repository: {raw_path}")
     return resolved
 
 
-def validate_patch_diff(repo: Path, patch_diff: str) -> None:
-    """Validate every path before any patch process is started."""
+def patch_paths(repo: Path, patch_diff: str) -> set[str]:
+    """Git parses hunks and paths; unsupported metadata is rejected explicitly."""
     import json
 
+    if len(patch_diff.encode("utf-8", errors="strict")) > 1_000_000 or "\x00" in patch_diff:
+        raise ValueError("invalid or oversized patch")
     try:
         data = json.loads(patch_diff)
     except json.JSONDecodeError:
@@ -82,22 +102,50 @@ def validate_patch_diff(repo: Path, patch_diff: str) -> None:
         edits = data.get("edits")
         if not isinstance(edits, list) or not edits:
             raise ValueError("patch must contain at least one edit")
+        paths = set()
         for item in edits:
-            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-                raise ValueError("patch edit path is required")
+            if (not isinstance(item, dict) or set(item) != {"path", "find", "replace"}
+                    or not all(isinstance(v, str) for v in item.values()) or not item["find"]):
+                raise ValueError("invalid simple patch edit")
             validate_patch_path(repo, item["path"])
-        return
-
-    paths: list[str] = []
+            paths.add(item["path"])
+        return paths
     for line in patch_diff.splitlines():
-        if line.startswith(("--- ", "+++ ")):
-            value = line[4:].split("\t", 1)[0]
-            if value != "/dev/null":
-                paths.append(value)
-    if not paths:
-        raise ValueError("unrecognized or empty patch format")
-    for path in paths:
+        if line.startswith(("rename ", "copy ", "similarity ", "dissimilarity ", "old mode ",
+                            "new mode ", "GIT binary patch", "Binary files ")):
+            raise ValueError("unsupported patch metadata")
+        if line.startswith(("new file mode ", "deleted file mode ")) and not line.endswith("100644"):
+            raise ValueError("unsupported file mode")
+        if line.startswith("index ") and len(line.split()) > 2 and line.split()[-1] != "100644":
+            raise ValueError("unsupported index mode")
+    parsed = subprocess.run(
+        ["git", "-c", "core.autocrlf=false", "apply", "--numstat", "-z", "-"], input=patch_diff.encode("utf-8"),
+        cwd=repo, capture_output=True, timeout=10,
+    )
+    if parsed.returncode or not parsed.stdout:
+        raise ValueError("invalid or empty unified diff")
+    paths = set()
+    for record in parsed.stdout.decode("utf-8", errors="strict").rstrip("\x00").split("\x00"):
+        added, removed, path = record.split("\t", 2)
+        if not added.isdigit() or not removed.isdigit():
+            raise ValueError("unsupported binary patch")
         validate_patch_path(repo, path)
+        paths.add(path)
+    return paths
+
+
+def validate_patch_diff(repo: Path, patch_diff: str) -> None:
+    patch_paths(repo, patch_diff)
+
+
+def workspace_snapshot(repo: Path) -> dict[str, str]:
+    snapshot = {}
+    for path in repo.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("workspace contains a symlink")
+        if path.is_file():
+            snapshot[path.relative_to(repo).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return snapshot
 
 
 @dataclass
@@ -164,12 +212,20 @@ class SandboxManager:
         source = Path(source_path).resolve()
         if not source.exists():
             raise FileNotFoundError(f"source path not found: {source}")
+        self.destroy_workspace(run_id)
         root = Path(tempfile.mkdtemp(prefix=f"incidentpilot-{run_id[:8]}-"))
         dest = root / "repo"
+        self._workspaces[run_id] = root
+        def excluded(directory, names):
+            return [name for name in names if sensitive_path(name)
+                    or name in {"__pycache__", "var", ".pytest_cache"}
+                    or name.endswith((".db", ".log")) or (Path(directory) / name).is_symlink() or (Path(directory) / name).is_junction()]
         if source.is_dir():
-            shutil.copytree(source, dest, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.db", "var"))
+            shutil.copytree(source, dest, ignore=excluded)
         else:
             dest.mkdir(parents=True)
+            if source.is_symlink() or sensitive_path(source.name):
+                raise ValueError("sensitive source forbidden")
             shutil.copy2(source, dest / source.name)
         self._workspaces[run_id] = root
         commit = subprocess.run(
@@ -182,6 +238,31 @@ class SandboxManager:
         self._base_commits[run_id] = (
             commit.stdout.strip() if commit.returncode == 0 else "UNVERSIONED"
         )
+        if commit.returncode == 0:
+            dirty = subprocess.run(["git", "status", "--porcelain", "--", "."], cwd=source if source.is_dir() else source.parent, capture_output=True, timeout=10)
+            if dirty.stdout:
+                self._base_commits[run_id] = "UNVERSIONED"
+                if self.settings.environment not in {"development", "test"}:
+                    raise ValueError("protected sandbox source must match a clean Git base")
+        if self.settings.sandbox_fault_type:
+            from incidentpilot.benchmarks.fault_cases import REGISTERED_FAULT_TYPES
+
+            if self.settings.sandbox_fault_type not in REGISTERED_FAULT_TYPES:
+                raise ValueError("unknown fault oracle")
+            checks = root / "checks"
+            checks.mkdir()
+            (checks / "test_fault_active.py").write_text(
+                "import time\nfrom app import create_app\nfrom faults import reset_fault\nfrom fastapi.testclient import TestClient\n"
+                "def test_fault_active_restores_healthy_behavior():\n"
+                "    reset_fault()\n    client = TestClient(create_app('sqlite:///:memory:'))\n"
+                "    healthy = client.get('/orders').json()\n"
+                f"    client.post('/admin/fault', json={{'fault_type': {self.settings.sandbox_fault_type!r}, 'params': {{'delay_seconds': .4, 'per_row_delay': .06}}}})\n"
+                "    started = time.perf_counter()\n    response = client.get('/orders')\n"
+                "    elapsed = time.perf_counter() - started\n"
+                "    assert response.status_code == 200\n    assert response.json() == healthy\n"
+                "    assert elapsed < .25, f'fault still active: {elapsed}s'\n    reset_fault()\n",
+                encoding="utf-8",
+            )
         return dest
 
     def base_commit_sha(self, run_id: str) -> str:
@@ -198,182 +279,88 @@ class SandboxManager:
         if root is None:
             raise RuntimeError("workspace not created")
         repo = root / "repo"
-        validate_patch_diff(repo, patch_diff)
-        # Prefer git apply if possible; otherwise write a unified-diff-ish file and
-        # apply simple replacements for test fixtures.
-        patch_path = root / "patch.diff"
-        patch_path.write_text(patch_diff, encoding="utf-8")
-        try:
-            subprocess.run(
-                ["git", "apply", "--check", str(patch_path)],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=True,
-            )
-            subprocess.run(
-                ["git", "apply", str(patch_path)],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=True,
-            )
-            return repo
-        except Exception:
-            # Fallback: interpret a simple "file path / find / replace" JSON patch used in tests
-            return self._apply_simple_patch(repo, patch_diff)
-
-    def _apply_simple_patch(self, repo: Path, patch_diff: str) -> Path:
-        """Apply a deterministic simple patch format used by Agent FakePatcher.
-
-        Format:
-        === FILE: relative/path.py ===
-        --- OLD
-        +++ NEW
-        """
+        paths = patch_paths(repo, patch_diff)
+        before = workspace_snapshot(repo)
         import json
 
-        # Also accept JSON patches
-        try:
-            data = json.loads(patch_diff)
-            if isinstance(data, dict) and data.get("type") == "simple_replace":
-                for item in data.get("edits", []):
-                    target = validate_patch_path(repo, item["path"])
-                    if not target.exists():
-                        raise ValueError(f"target missing: {item['path']}")
-                    text = target.read_text(encoding="utf-8")
-                    if item["find"] not in text:
-                        # Idempotent: already applied from a previous attempt
-                        if item["replace"] in text:
-                            continue
-                        raise ValueError(f"find string not present in {item['path']}")
-                    target.write_text(text.replace(item["find"], item["replace"], 1), encoding="utf-8")
-                return repo
-        except json.JSONDecodeError:
-            pass
-
-        # Text block format
-        blocks = patch_diff.split("=== FILE:")
-        for block in blocks[1:]:
-            header, _, body = block.partition("===\n")
-            rel = header.strip()
-            old_marker = "--- OLD\n"
-            new_marker = "+++ NEW\n"
-            if old_marker not in body or new_marker not in body:
-                continue
-            old = body.split(old_marker, 1)[1].split(new_marker, 1)[0]
-            new = body.split(new_marker, 1)[1]
-            target = validate_patch_path(repo, rel)
-            text = target.read_text(encoding="utf-8")
-            if old not in text:
-                if new in text:
-                    continue
-                raise ValueError(f"old block not found in {rel}")
-            target.write_text(text.replace(old, new, 1), encoding="utf-8")
+        if patch_diff.lstrip().startswith("{"):
+            for item in json.loads(patch_diff)["edits"]:
+                target = validate_patch_path(repo, item["path"])
+                text = target.read_text(encoding="utf-8")
+                if item["find"] not in text:
+                    raise ValueError(f"find string not present in {item['path']}")
+                target.write_text(text.replace(item["find"], item["replace"], 1), encoding="utf-8")
+        else:
+            for args in (["--check"], []):
+                subprocess.run(
+                    ["git", "-c", "core.autocrlf=false", "apply", *args, "-"], input=patch_diff.encode("utf-8"), cwd=repo,
+                    capture_output=True, timeout=30, check=True,
+                )
+        after = workspace_snapshot(repo)
+        changed = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
+        if changed != paths:
+            raise ValueError("actual patch changes differ from declared paths")
         return repo
 
     def run_tests(self, run_id: str, profile: str = "pytest", timeout: int = 120) -> SandboxResult:
+        """Synchronous compatibility entry point; Agent uses run_tests_async."""
+        return asyncio.run(self.run_tests_async(run_id, profile, timeout))
+
+    async def run_tests_async(self, run_id: str, profile: str = "pytest", timeout: int = 120) -> SandboxResult:
+        from incidentpilot.sandbox.process import run_process
+
         if profile not in ALLOWED_TEST_COMMANDS:
             raise ValueError(f"test profile not allowlisted: {profile}")
-        cmd = ALLOWED_TEST_COMMANDS[profile]
         root = self._workspaces.get(run_id)
         if root is None:
             raise RuntimeError("workspace not created")
         repo = root / "repo"
-
-        use_docker = self.settings.sandbox_enabled
+        cmd = list(ALLOWED_TEST_COMMANDS[profile])
+        if profile == "pytest_fault" and not (root / "checks" / "test_fault_active.py").is_file():
+            raise ValueError("fault-active test oracle is missing")
+        protected = self.settings.environment not in {"development", "test"}
+        if protected and not self.settings.sandbox_enabled:
+            raise RuntimeError("protected environment requires Docker sandbox")
         started = time.perf_counter()
-        if use_docker:
-            if not docker_available():
-                raise RuntimeError("Docker sandbox requested but Docker daemon is unavailable")
-            return self._run_in_docker(run_id, repo, cmd, timeout, started)
-        return self._run_local(run_id, repo, cmd, timeout, started)
+        container = "ip-sandbox-" + uuid.uuid4().hex
+        env = None
+        if self.settings.sandbox_enabled:
+            if self.settings.sandbox_network != "none":
+                raise ValueError("sandbox network must be none")
+            cmd = [
+                "docker", "run", "--rm", "--name", container, "--label", f"incidentpilot.run_id={run_id}",
+                "--network", "none", "--user", "65534:65534", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", "--memory", "512m", "--cpus", "1.0",
+                "--pids-limit", "128", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m",
+                "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTEST_ADDOPTS=-p no:cacheprovider",
+                "-e", "PYTHONPATH=/workspace",
+                *(["-v", f"{root / 'checks'}:/checks:ro"] if profile == "pytest_fault" else []),
+                "-v", f"{repo}:/workspace:ro", "-w", "/workspace", self.settings.sandbox_image, *cmd,
+            ]
+        else:
+            warnings.warn("NON-ISOLATED local sandbox: development/test only", RuntimeWarning, stacklevel=2)
+            import sys
 
-    def _run_local(
-        self, run_id: str, repo: Path, cmd: list[str], timeout: int, started: float
-    ) -> SandboxResult:
-        allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PYTHONHOME"}
-        env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
-        env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
-        proc = subprocess.run(
-            cmd,
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
-        duration = (time.perf_counter() - started) * 1000
-        return SandboxResult(
-            ok=proc.returncode == 0,
-            exit_code=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            duration_ms=duration,
-            command=cmd,
-            mode="local",
-        )
-
-    def _run_in_docker(
-        self, run_id: str, repo: Path, cmd: list[str], timeout: int, started: float
-    ) -> SandboxResult:
-        image = self.settings.sandbox_image
-        network = self.settings.sandbox_network or "none"
-        docker_cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            network,
-            "--user",
-            "65534:65534",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--memory",
-            "512m",
-            "--cpus",
-            "1.0",
-            "--pids-limit",
-            "128",
-            "-v",
-            f"{repo}:/workspace:rw",
-            "-w",
-            "/workspace",
-            image,
-            *cmd,
-        ]
+            cmd[0] = sys.executable
+            allowed = {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP"}
+            env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+            env["PYTHONPATH"] = str(repo)
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            env["PYTEST_ADDOPTS"] = "-p no:cacheprovider"
+        before_tests = workspace_snapshot(repo)
         try:
-            proc = subprocess.run(
-                docker_cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout + 30,
-            )
-            duration = (time.perf_counter() - started) * 1000
+            code, stdout, stderr = await run_process(cmd, cwd=repo, env=env, timeout=timeout)
+            if workspace_snapshot(repo) != before_tests:
+                raise ValueError("test execution changed approved workspace content")
             return SandboxResult(
-                ok=proc.returncode == 0,
-                exit_code=proc.returncode,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
-                duration_ms=duration,
-                command=docker_cmd,
-                mode="docker",
+                ok=code == 0, exit_code=code, stdout=stdout, stderr=stderr,
+                duration_ms=(time.perf_counter() - started) * 1000,
+                command=cmd, mode="docker" if self.settings.sandbox_enabled else "local",
             )
-        except Exception as exc:
-            duration = (time.perf_counter() - started) * 1000
-            return SandboxResult(
-                ok=False,
-                exit_code=-1,
-                stdout="",
-                stderr=str(exc),
-                duration_ms=duration,
-                command=docker_cmd,
-                mode="docker_error",
-            )
+        finally:
+            if self.settings.sandbox_enabled:
+                # Killing the Docker CLI does not stop its container.
+                await run_process(["docker", "rm", "-f", container], timeout=15)
 
     def export_patch_artifact(
         self,

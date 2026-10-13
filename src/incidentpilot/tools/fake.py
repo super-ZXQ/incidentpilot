@@ -173,5 +173,6 @@ def register_fake_readonly_tools(
         ),
     ]
     for spec in specs:
+        spec.input_schema["additionalProperties"] = False
         registry.register(spec)
     return backend

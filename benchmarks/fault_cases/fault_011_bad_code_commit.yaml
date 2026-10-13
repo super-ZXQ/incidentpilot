@@ -1,0 +1,28 @@
+id: fault_011_bad_code_commit
+title: A serializer code regression raises ValueError in orders listing.
+category: code_regression
+difficulty: medium
+fault_type: bad_code_commit
+params: {}
+incident:
+  title: Orders listing regression 11
+  service: orders-api
+  severity: SEV2
+  symptom: Orders listing differs from its established latency or response contract.
+  environment: reference-production
+  repository: reference/orders_api
+ground_truth:
+  fault_category: code_regression
+  affected_component: orders-api /orders handler
+  root_cause: A serializer code regression raises ValueError in orders listing.
+  causal_facts:
+  - ValueError is raised by the serializer fault branch
+  - listing returns HTTP 500
+expected_evidence_sources:
+- read_metrics
+- read_logs
+- read_source_code
+expected_fix_behavior:
+  must_pass_tests: true
+  notes: Reproduce with the fault active and compare response and latency to healthy
+    behavior; healthy-only tests are insufficient.

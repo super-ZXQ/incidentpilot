@@ -22,10 +22,11 @@ class MCPReadonlyAdapter:
     used when MCP_LIVE=true and the server module is importable.
     """
 
-    def __init__(self, live: bool | None = None) -> None:
+    def __init__(self, live: bool | None = None, settings=None) -> None:
         if live is None:
             live = os.environ.get("MCP_LIVE", "false").lower() == "true"
         self.live = live
+        self.settings = settings
         self._session = None
         self._client = None
 
@@ -47,10 +48,16 @@ class MCPReadonlyAdapter:
             "REFERENCE_ORDERS_API_URL",
             "REFERENCE_DB_URL",
         }
+        environment = {key: value for key, value in os.environ.items() if key.upper() in allowed_env}
+        if self.settings is not None:
+            environment.update({"REFERENCE_REPO_PATH": self.settings.reference_repo_path,
+                                "REFERENCE_LOGS_PATH": self.settings.reference_logs_path,
+                                "REFERENCE_ORDERS_API_URL": self.settings.reference_orders_api_url,
+                                "REFERENCE_DB_URL": self.settings.reference_db_url})
         params = StdioServerParameters(
             command=sys.executable,
             args=[str(SERVER_PATH)],
-            env={key: value for key, value in os.environ.items() if key.upper() in allowed_env},
+            env=environment,
         )
         # Store context managers for later use
         self._stdio_cm = stdio_client(params)
@@ -71,22 +78,24 @@ class MCPReadonlyAdapter:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if self.live and self._session is not None:
             result = await self._session.call_tool(name, arguments)
+            if result.isError:
+                raise ValueError("MCP tool signaled isError")
             texts = []
             for block in result.content:
                 text = getattr(block, "text", None)
                 if text:
                     texts.append(text)
-            if texts:
+            if len(texts) == 1:
                 try:
                     import json
 
                     payload = json.loads(texts[0])
-                    if isinstance(payload, dict) and payload.get("error"):
-                        raise RuntimeError(str(payload["error"]))
+                    if not isinstance(payload, dict) or not payload or payload.get("error"):
+                        raise ValueError("MCP returned invalid, empty or error payload")
                     return payload
                 except json.JSONDecodeError:
-                    return {"text": "\n".join(texts)}
-            return {"content_blocks": len(result.content)}
+                    raise ValueError("MCP returned malformed JSON") from None
+            raise ValueError("MCP must return one complete JSON result")
         if self.live:
             raise RuntimeError("MCP live adapter is not connected; fake fallback is disabled")
         # Explicit deterministic fake backend used only by unit tests.

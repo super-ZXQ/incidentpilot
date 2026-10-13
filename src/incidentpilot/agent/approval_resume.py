@@ -22,13 +22,14 @@ async def resume_after_approval(
     github: GitHubIntegration | None = None,
 ) -> dict[str, Any]:
     settings = settings or get_settings()
-    github = github or default_github_integration()
+    github = github or default_github_integration(settings)
 
     factory = get_session_factory()
     async with factory() as session:
         from sqlalchemy import select
 
-        from incidentpilot.models.db import AgentRun, ExternalSideEffect, PatchArtifact
+        from incidentpilot.models.db import AgentRun, Approval, ExternalSideEffect
+        from incidentpilot.services.artifacts import binding, validated_artifact
 
         result = await session.execute(select(AgentRun).where(AgentRun.run_id == run_id))
         run = result.scalar_one_or_none()
@@ -36,6 +37,12 @@ async def resume_after_approval(
             raise ValueError(f"run not found: {run_id}")
 
         service = RunService(session)
+        approval = await session.scalar(select(Approval).where(Approval.run_pk == run.id))
+        if approval is None or approval.decision != decision.value:
+            raise ValueError("persisted human approval required")
+        artifact = await validated_artifact(session, run, approval.patch_artifact_id)
+        if approval.payload != binding(artifact):
+            raise ValueError("approved artifact binding changed")
 
         if decision == ApprovalDecision.REJECT:
             await service.mark_status(
@@ -54,20 +61,6 @@ async def resume_after_approval(
             workflow_state=WorkflowState.CREATE_PULL_REQUEST.value,
         )
 
-        art_result = await session.execute(
-            select(PatchArtifact).where(PatchArtifact.run_pk == run.id)
-        )
-        artifact = art_result.scalars().first()
-        if artifact is None:
-            await service.mark_status(
-                run,
-                AgentRunStatus.FAILED,
-                workflow_state=WorkflowState.FAILED.value,
-                error="no PatchArtifact available for PR creation",
-                finished=True,
-            )
-            return {"status": run.status, "error": "missing patch artifact"}
-
         idempotency_key = f"github_pr:{run.run_id}:{artifact.patch_hash}"
         effect_result = await session.execute(
             select(ExternalSideEffect)
@@ -75,6 +68,9 @@ async def resume_after_approval(
             .with_for_update()
         )
         effect = effect_result.scalar_one_or_none()
+        from incidentpilot.persistence.ownership import fence
+
+        await fence(session, run_id)
         if effect is not None and effect.status == "COMPLETED":
             from incidentpilot.observability.metrics import DUPLICATE_SIDE_EFFECTS
 
@@ -102,7 +98,16 @@ async def resume_after_approval(
             effect.attempt_count += 1
         await session.commit()
 
-        pr = github.create_pull_request(
+        from incidentpilot.persistence.ownership import fence
+
+        await fence(session, run_id)
+        await session.commit()
+        async def authorize():
+            async with factory() as auth_session:
+                await fence(auth_session, run_id)
+                await auth_session.commit()
+
+        pr = await github.acreate_pull_request(
             run_id=run.run_id,
             title=f"IncidentPilot fix for {run.run_id}",
             body=(
@@ -114,11 +119,15 @@ async def resume_after_approval(
             patch_diff=artifact.patch_diff,
             base_commit_sha=artifact.base_commit_sha,
             idempotency_key=idempotency_key,
+            authorize=authorize,
         )
+        await fence(session, run_id)
         if not pr.ok:
             effect.status = "FAILED"
             effect.error = pr.error or "github pr failed"
             await session.commit()
+            if pr.details.get("retryable"):
+                raise ConnectionError("transient GitHub failure; remote reconciliation required")
             await service.mark_status(
                 run,
                 AgentRunStatus.FAILED,

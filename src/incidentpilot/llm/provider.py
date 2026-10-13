@@ -156,6 +156,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self._model = model
         self._supports_tools = supports_tools
         self._timeout = timeout
+        self.usage_totals: dict[str, int] | None = None
 
     @property
     def provider_name(self) -> str:
@@ -237,7 +238,10 @@ class OpenAICompatibleProvider(LLMProvider):
             payload_messages.append({"role": "system", "content": system})
         payload_messages.extend({"role": m.role, "content": m.content} for m in messages)
 
+        if sum(len(m["content"]) for m in payload_messages) > 40_000:
+            raise ValueError("LLM context budget exceeded")
         payload = {
+            "max_tokens": 4096,
             "model": self._model,
             "messages": payload_messages,
             "temperature": temperature,
@@ -265,6 +269,8 @@ class OpenAICompatibleProvider(LLMProvider):
             message = choices[0].get("message") or {}
             content = message.get("content") or ""
         usage = data.get("usage") or {}
+        if all(isinstance(usage.get(k), int) for k in ("prompt_tokens", "completion_tokens", "total_tokens")):
+            self.usage_totals = {key: (self.usage_totals or {}).get(key, 0) + usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")}
         return LLMResponse(
             content=content,
             provider=self.provider_name,
@@ -286,8 +292,10 @@ def build_llm_provider(
     api_key: str,
     model: str,
 ) -> LLMProvider:
-    if not llm_enabled or not api_key:
+    if not llm_enabled:
         return FakeLLMProvider()
+    if not api_key:
+        raise ValueError("LLM enabled but API key missing; fake fallback is disabled")
     if provider_name != "openai-compatible":
         raise ValueError(f"unsupported LLM provider: {provider_name}")
     return OpenAICompatibleProvider(base_url=base_url, api_key=api_key, model=model)

@@ -4,7 +4,7 @@
 
 IncidentPilot is not a chatbot or log summarizer. It executes a bounded investigation: a model chooses the next readonly observation, every claim is tied to tool-produced evidence, a hypothesis is independently verified, and a proposed fix is tested in isolation before a human can approve a pull request.
 
-> Scope: a portfolio-grade V1 against a controlled, production-like `orders-api`. It is not a hardened multi-tenant sandbox and has not been deployed in enterprise production.
+> Scope: an experimental V1 against a controlled, production-like `orders-api`. It is not a hardened multi-tenant sandbox and has not been deployed in enterprise production.
 
 ## Problem
 
@@ -96,7 +96,7 @@ Reports are labeled and never mixed:
 
 Metrics include structured category/component/root-cause accuracy, evidence support, tool selection, investigation success, remediation readiness, full resolution, patch pass rate, unsafe action rate, tool count, and median duration. Real tiers run setup → reproduce → investigate → reset and fail rather than silently use fake data. Token/cost is omitted unless provider metadata is available.
 
-### Verified V1 benchmark (2026-09-17)
+### Historical project report (2026-09-17; not revalidated by this audit)
 
 | Tier | Cases | Result | Safety / workflow |
 |---|---:|---|---|
@@ -104,7 +104,17 @@ Metrics include structured category/component/root-cause accuracy, evidence supp
 | `real_llm_investigation` | 8 | 7/8 structured Root Cause accuracy (87.5%) | 100% evidence support; 0 unsafe actions; 4.75 average tool calls; 171.9s median |
 | `full_remediation` canary | 1 | verified Root Cause → Docker patch/test PASS → immutable PatchArtifact → `WAITING_APPROVAL` | GitHub remained disabled; no external mutation |
 
-The real-model run used the official DeepSeek Flash API (`deepseek-flash`, served as V4.1 Flash at test time), live MCP stdio tools, the Dockerized reference service, and separate PostgreSQL control/reference databases. Fault 008 was retained as a genuine miss: the model diagnosed the N+1/per-row delay but did not prove the recent-refactor causal category with Git evidence. FakeModel Root Cause quality is intentionally not presented as model reasoning.
+The historical text reports use of the DeepSeek Flash API (`deepseek-flash`, served as V4.1 Flash at test time), live MCP stdio tools, the Dockerized reference service, and separate PostgreSQL control/reference databases. Fault 008 was retained as a genuine miss: the model diagnosed the N+1/per-row delay but did not prove the recent-refactor causal category with Git evidence. FakeModel Root Cause quality is intentionally not presented as model reasoning.
+
+## 2026-10-13 security audit
+
+The current audit and reproducible records are in [docs/audit](docs/audit/INCIDENTPILOT_AUDIT.md). The historical table above is preserved as project history; its raw real-model execution was not reproduced in this audit and its old evidence/remediation metrics are not comparable with the stricter current scorer. This audit has no real model API Key and makes no fresh real-model or real-GitHub success claim.
+
+Authentication now defaults to deny. Every `/v1` route and `/metrics` needs a server-provisioned Bearer credential. Roles: `initiator` creates and reads its own incidents; `reviewer` reads organization-owned incidents; `approver` can review/decide organization approvals; `admin` has both capabilities and can read legacy ownerless records. Approval actor comes from authentication, even if a legacy client sends `actor`. Use HTTPS and store token configuration outside Git. This is a single-organization credential map, not an OIDC or tenant-isolation implementation.
+
+Docker is enabled by default. Host execution requires explicit `SANDBOX_ENABLED=false` and `ENVIRONMENT=development|test`, emits a warning, and is rejected in every other environment. Protected source must have a clean Git base. `EMBEDDED_WORKER_ENABLED=true` is likewise rejected outside development/test.
+
+Twenty fault cases and A/B/C evaluation share one scorer. Offline Fake results, three actual Docker patch attempts (including two failures), NOT_RUN items, and scope limitations are in [the evaluation report](docs/audit/INCIDENTPILOT_EVALUATION.md). Healthy-path tests passing does not prove the injected fault was fixed; `full_remediation` additionally runs an independent fault-active oracle.
 
 ## Quick start
 
@@ -115,13 +125,16 @@ uv sync --extra dev
 docker compose build sandbox-image
 docker compose up -d incidentpilot-postgres reference-postgres reference-orders-api prometheus
 uv run alembic upgrade head
-uv run uvicorn incidentpilot.api.app:app --factory --port 8000
+uv run uvicorn incidentpilot.api.app:create_app --factory --port 8000
 uv run python -m incidentpilot.worker
 ```
 
 Suggested environment:
 
 ```bash
+ENVIRONMENT=development
+# Set API_TOKENS in your untracked .env to a JSON token -> {subject, role} map.
+# Generate random tokens locally; never use a committed example credential.
 DATABASE_URL=postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5433/incidentpilot_app
 TOOL_BACKEND=mcp
 REFERENCE_ORDERS_API_URL=http://127.0.0.1:8001
@@ -143,9 +156,14 @@ For a real model also set `LLM_ENABLED=true`, `LLM_PROVIDER=openai-compatible`, 
 - `GET /v1/runs/{run_id}/tool-calls`
 - `GET /v1/runs/{run_id}/patch-artifact`
 - `POST /v1/runs/{run_id}/approval` — `APPROVE` or `REJECT`
-- `GET /metrics` — bounded-label Prometheus worker/tool metrics
+- `GET /v1/runs/{run_id}/tests` — test logs and execution mode
+- `GET /v1/runs/{run_id}/approval` — authenticated approval record and binding
+- `GET /v1/runtime` — configured model/GitHub/sandbox mode and caller role
+- `GET /metrics` — protected Prometheus worker/tool metrics
+- `GET /health` — public liveness
+- `GET /demo` — public static shell; all investigation data requires authentication
 
-The API only persists Incident/AgentRun state. Production mode does **not** execute investigations inside the API process. PostgreSQL is the queue and coordination store; independent workers (`python -m incidentpilot.worker`) atomically claim rows with `FOR UPDATE SKIP LOCKED`, renew leases, and resume expired work from LangGraph checkpoints. `EMBEDDED_WORKER_ENABLED=true` exists **only for tests and local development**. Queue saturation returns `429` with `RUN_QUEUE_FULL`.
+Incident submission only persists Incident/AgentRun state; approval recovery executes under a leased, heartbeating Worker context. Production mode does **not** execute investigations inside the API process. PostgreSQL is the queue and coordination store; independent workers (`python -m incidentpilot.worker`) atomically claim rows with `FOR UPDATE SKIP LOCKED`, renew leases, and resume expired work from LangGraph checkpoints. `EMBEDDED_WORKER_ENABLED=true` exists **only for tests and local development**. Queue saturation returns `429` with `RUN_QUEUE_FULL`.
 
 Experiments that were actually executed are listed in `docs/RESILIENCE_REPORT.md`. Unexecuted items (e.g. Locust on this host, real GitHub PRs) are marked not executed and are not claimed as verified.
 
@@ -172,7 +190,7 @@ src/incidentpilot/persistence SQLAlchemy state and repositories
 src/incidentpilot/eval        structured, tiered evaluation
 ops_mcp/ops_readonly          readonly MCP stdio server
 reference/orders_api          production-like reference service
-benchmarks/fault_cases        eight withheld Ground Truth cases
+benchmarks/fault_cases        twenty withheld Ground Truth cases (original eight retained)
 alembic                       control-plane migrations
 tests                         unit/API/workflow/MCP/sandbox/eval tests
 docs                          V1 product and architecture ground truth
@@ -180,7 +198,9 @@ docs                          V1 product and architecture ground truth
 
 ## Demo
 
-Inject a fault, submit its Incident without fault ID/Ground Truth, watch model-selected Tool Calls and Evidence accumulate, inspect the verified Root Cause and PatchArtifact, then approve and show the resumed workflow's mock PR. Label FakeModel, real model, local workspace, Docker, mock GitHub, and real GitHub paths explicitly.
+Open `/demo`, enter a Run ID and a server-provisioned token. Credentials stay in page memory and the browser renders untrusted data as text. To create a run, send the same token as `Authorization: Bearer ...` to the documented API. Approvals should include the displayed `patch_artifact_id` and `patch_hash`; neither client-side identity nor arbitrary actor text grants permission.
+
+In a dedicated reference environment only, inject a fault, submit its Incident without fault ID/Ground Truth, watch model-selected Tool Calls and Evidence accumulate, inspect the verified Root Cause and PatchArtifact, then approve and show the resumed workflow's mock PR. Label FakeModel, real model, local workspace, Docker, mock GitHub, and real GitHub paths explicitly.
 
 ## Limitations
 
@@ -188,14 +208,16 @@ Inject a fault, submit its Incident without fault ID/Ground Truth, watch model-s
 - The Docker sandbox is controlled isolation, not a hostile multi-tenant boundary.
 - Several reference faults are deterministic application-level injections rather than failures from an external managed service.
 - Real LLM quality, GitHub mutation, Docker execution, and PostgreSQL recovery are claimed only when those dependencies were actually exercised.
-- The published real-model score is one dated eight-case run, not a statistical confidence interval; token/cost aggregation was unavailable for that run.
+- The historical real-model score is an un-revalidated dated report; this audit reports real-model experiments as NOT_RUN. Current provider usage is aggregated only when supplied; cost remains null without an explicit price schedule.
 - Real GitHub mutation was not exercised because no repository/token was supplied; approval and PR behavior use the mock integration in tests.
 - There is no automatic production deployment or production write access.
 
 ## Roadmap
 
-High-value follow-ups: aggregate provider token/cost metadata, run repeated model trials for confidence intervals, add crash injection at every checkpoint, sign PatchArtifact provenance, and record a short demo.
+High-value follow-ups: run repeated real-model trials, independently adjudicate causal support, validate real PR recovery in an authorized test repository, add OIDC if broader identity management is needed, and measure larger workloads before considering additional infrastructure.
 
 ## English summary
 
 IncidentPilot demonstrates how to turn LLM reasoning into a governed software workflow: model-owned investigation decisions, evidence provenance, independent hypothesis verification, capability-based tools over MCP, bounded sandboxed remediation, durable human approval, exact-patch GitHub integration, and reproducible evaluation. It intentionally avoids claims of enterprise production maturity.
+
+Audit reproduction: `uv run python scripts/audit_evaluation.py` uses a temporary SQLite control DB, Fake reasoning/tools, real Docker tests and simulated test approval; it never writes to real GitHub. PostgreSQL failure injection requires an explicitly disposable `AUDIT_POSTGRES_URL`; use `POSTGRES_TEST_URL` for the original integration tests. SQL role checks additionally accept disposable `AUDIT_REFERENCE_DB_URL` / `AUDIT_REFERENCE_ADMIN_URL`. Synthetic load now requires `LOAD_API_TOKEN` for a configured test identity.

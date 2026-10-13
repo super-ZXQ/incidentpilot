@@ -22,12 +22,12 @@ CATEGORY_ALIASES = {
 def _category_matches(expected: str, observed: str) -> bool:
     if not expected or not observed:
         return False
-    if expected == observed or expected in observed:
+    if expected == observed:
         return True
     return observed in CATEGORY_ALIASES.get(expected, set())
 
 
-def score_structured_root_cause(ground_truth: dict[str, Any], agent_rc: dict[str, Any]) -> dict[str, bool]:
+def score_structured_root_cause(ground_truth: dict[str, Any], agent_rc: dict[str, Any], *, evidence=None, tool_calls=None, run_id=None) -> dict[str, bool]:
     gt_cat = str(
         ground_truth.get("fault_category") or ground_truth.get("expected_fault_category") or ""
     ).lower()
@@ -50,12 +50,18 @@ def score_structured_root_cause(ground_truth: dict[str, Any], agent_rc: dict[str
             facts_hits += 1
     facts_ok = (not gt_facts) or (facts_hits / len(gt_facts) >= 0.5)
 
-    evidence_ok = bool(agent_rc.get("evidence_ids") or agent_rc.get("supporting_evidence_ids"))
+    from incidentpilot.agent.evidence import valid_evidence
+
+    ids = agent_rc.get("evidence_ids") or agent_rc.get("supporting_evidence_ids") or []
+    valid = valid_evidence(evidence or [], tool_calls or [], run_id)
+    known = {item["evidence_id"] for item in valid}
+    evidence_ok = bool(ids) and set(ids).issubset(known)
     structured_ok = category_ok and comp_ok and facts_ok and evidence_ok
     return {
         "category_ok": category_ok,
         "component_ok": comp_ok,
         "causal_facts_ok": facts_ok,
         "evidence_bound": evidence_ok,
+        "causal_facts_match": facts_ok,
         "structured_ok": structured_ok,
     }

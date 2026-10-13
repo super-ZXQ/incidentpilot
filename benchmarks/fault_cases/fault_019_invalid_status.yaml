@@ -1,0 +1,28 @@
+id: fault_019_invalid_status
+title: The serializer overwrites order status with an unknown enum value.
+category: data_contract
+difficulty: medium
+fault_type: invalid_status
+params: {}
+incident:
+  title: Orders listing regression 19
+  service: orders-api
+  severity: SEV2
+  symptom: Orders listing differs from its established latency or response contract.
+  environment: reference-production
+  repository: reference/orders_api
+ground_truth:
+  fault_category: data_contract
+  affected_component: orders-api /orders handler
+  root_cause: The serializer overwrites order status with an unknown enum value.
+  causal_facts:
+  - status becomes unknown
+  - response status no longer matches stored created status
+expected_evidence_sources:
+- read_metrics
+- read_logs
+- read_source_code
+expected_fix_behavior:
+  must_pass_tests: true
+  notes: Reproduce with the fault active and compare response and latency to healthy
+    behavior; healthy-only tests are insufficient.

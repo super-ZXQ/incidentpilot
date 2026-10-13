@@ -1,0 +1,28 @@
+id: fault_020_inflated_price
+title: A unit conversion regression multiplies totals in cents by 100.
+category: application_bug
+difficulty: complex
+fault_type: inflated_price
+params: {}
+incident:
+  title: Orders listing regression 20
+  service: orders-api
+  severity: SEV2
+  symptom: Orders listing differs from its established latency or response contract.
+  environment: reference-production
+  repository: reference/orders_api
+ground_truth:
+  fault_category: application_bug
+  affected_component: orders-api /orders handler
+  root_cause: A unit conversion regression multiplies totals in cents by 100.
+  causal_facts:
+  - total_cents is multiplied by 100
+  - response prices differ by a factor of 100
+expected_evidence_sources:
+- read_metrics
+- read_logs
+- read_source_code
+expected_fix_behavior:
+  must_pass_tests: true
+  notes: Reproduce with the fault active and compare response and latency to healthy
+    behavior; healthy-only tests are insufficient.

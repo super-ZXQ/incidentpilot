@@ -1,0 +1,6 @@
+direct: 20/20, root_cause_accuracy=0.0, P95=0.074s
+fixed: 20/20, root_cause_accuracy=0.0, P95=0.076s
+autonomous: 20/20, root_cause_accuracy=0.0, P95=0.072s
+patch slow_database_query: WAITING_APPROVAL / PASSED
+patch null_exception: NEEDS_HUMAN_INTERVENTION / FAILED
+patch incorrect_configuration: NEEDS_HUMAN_INTERVENTION / FAILED

@@ -1,0 +1,28 @@
+id: fault_016_wrong_total
+title: The response overwrites monetary totals with negative one.
+category: application_bug
+difficulty: simple
+fault_type: wrong_total
+params: {}
+incident:
+  title: Orders listing regression 16
+  service: orders-api
+  severity: SEV2
+  symptom: Orders listing differs from its established latency or response contract.
+  environment: reference-production
+  repository: reference/orders_api
+ground_truth:
+  fault_category: application_bug
+  affected_component: orders-api /orders handler
+  root_cause: The response overwrites monetary totals with negative one.
+  causal_facts:
+  - total_cents is set to negative one
+  - response totals violate nonnegative monetary values
+expected_evidence_sources:
+- read_metrics
+- read_logs
+- read_source_code
+expected_fix_behavior:
+  must_pass_tests: true
+  notes: Reproduce with the fault active and compare response and latency to healthy
+    behavior; healthy-only tests are insufficient.

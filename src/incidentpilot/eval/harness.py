@@ -5,8 +5,12 @@ Ground Truth comes from Fault Cases, never from the Agent.
 
 from __future__ import annotations
 
+import math
+import platform
+import statistics
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +44,15 @@ class CaseOutcome:
 
 @dataclass
 class BenchmarkReport:
+    strategy: str = "autonomous"
+    p95_duration_seconds: float = 0.0
+    citation_validity_rate: float = 0.0
+    causal_support_rate: float | None = None
+    evidence_relevance_rate: float | None = None
+    patch_generation_rate: float = 0.0
+    patch_application_rate: float = 0.0
+    pr_creation_rate: float = 0.0
+    environment: dict[str, Any] = field(default_factory=dict)
     tier: str = "workflow_fake"
     total_cases: int = 0
     completed: int = 0
@@ -62,41 +75,8 @@ class BenchmarkReport:
     notes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "tier": self.tier,
-            "total_cases": self.total_cases,
-            "completed": self.completed,
-            "root_cause_accuracy": self.root_cause_accuracy,
-            "fault_category_accuracy": self.fault_category_accuracy,
-            "affected_component_accuracy": self.affected_component_accuracy,
-            "evidence_support_rate": self.evidence_support_rate,
-            "tool_selection_accuracy": self.tool_selection_accuracy,
-            "investigation_success_rate": self.investigation_success_rate,
-            "remediation_ready_rate": self.remediation_ready_rate,
-            "full_resolution_rate": self.full_resolution_rate,
-            "incident_resolution_rate": self.incident_resolution_rate,
-            "patch_test_pass_rate": self.patch_test_pass_rate,
-            "unsafe_action_rate": self.unsafe_action_rate,
-            "average_tool_calls": self.average_tool_calls,
-            "median_resolution_seconds": self.median_resolution_seconds,
-            "token_usage": self.token_usage,
-            "estimated_cost": self.estimated_cost,
-            "notes": self.notes,
-            "outcomes": [
-                {
-                    "fault_case_id": o.fault_case_id,
-                    "run_id": o.run_id,
-                    "final_status": o.final_status,
-                    "root_cause_correct": o.root_cause_correct,
-                    "patch_test_pass": o.patch_test_pass,
-                    "tool_call_count": o.tool_call_count,
-                    "evidence_count": o.evidence_count,
-                    "duration_seconds": o.duration_seconds,
-                    "error": o.error,
-                }
-                for o in self.outcomes
-            ],
-        }
+        return asdict(self)
+
 
 
 def _score_root_cause(ground_truth: dict[str, Any], agent_summary: str) -> bool:
@@ -105,7 +85,7 @@ def _score_root_cause(ground_truth: dict[str, Any], agent_summary: str) -> bool:
 
     agent_rc = {
         "summary": agent_summary,
-        "evidence_ids": ["E"],
+        "evidence_ids": [],
     }
     scores = score_structured_root_cause(ground_truth, agent_rc)
     if scores["structured_ok"]:
@@ -123,16 +103,18 @@ def _score_root_cause(ground_truth: dict[str, Any], agent_summary: str) -> bool:
 
 class EvaluationHarness:
     def __init__(
-        self,
-        fault_case_dir: str | Path,
-        settings: Settings | None = None,
-        tier: str = "workflow_fake",
+        self, fault_case_dir: str | Path, settings: Settings | None = None,
+        tier: str = "workflow_fake", strategy: str = "autonomous",
     ) -> None:
         self.fault_case_dir = Path(fault_case_dir)
         self.settings = settings or get_settings()
         if tier not in {"workflow_fake", "real_llm_investigation", "full_remediation"}:
             raise ValueError(f"unknown benchmark tier: {tier}")
         self.tier = tier
+        if strategy not in {"direct", "fixed", "autonomous"}:
+            raise ValueError("unknown comparison strategy")
+        self.strategy = strategy
+        self.settings = self.settings.model_copy(update={"evaluation_strategy": strategy})
         if tier == "workflow_fake":
             self.settings = self.settings.model_copy(
                 update={"tool_backend": "fake", "llm_enabled": False, "llm_api_key": ""}
@@ -169,7 +151,8 @@ class EvaluationHarness:
             run = await RunService(session).create_for_incident(incident)
             incident_pk, run_id = incident.id, run.run_id
 
-        executor = RunExecutor(self.settings)
+        execution_settings = self.settings.model_copy(update={"sandbox_fault_type": case.fault_type}) if self.tier == "full_remediation" else self.settings
+        executor = RunExecutor(execution_settings)
         try:
             await executor.execute(incident_pk=incident_pk, run_id=run_id)
         finally:
@@ -180,7 +163,7 @@ class EvaluationHarness:
             run_obj = await RunService(session).get(run_id)
             from sqlalchemy import select
 
-            from incidentpilot.models.db import Evidence, ToolCall
+            from incidentpilot.models.db import Evidence, PatchAttempt, ToolCall
 
             evidence = list(
                 (
@@ -192,6 +175,7 @@ class EvaluationHarness:
                     await session.execute(select(ToolCall).where(ToolCall.run_pk == run_obj.id))
                 ).scalars()
             )
+            attempts = list((await session.execute(select(PatchAttempt).where(PatchAttempt.run_pk == run_obj.id))).scalars())
             status = run_obj.status
             root_cause = run_obj.root_cause or {}
             result = run_obj.result or {}
@@ -200,7 +184,9 @@ class EvaluationHarness:
         summary = str(root_cause.get("summary", ""))
         from incidentpilot.eval.scoring import score_structured_root_cause
 
-        structured = score_structured_root_cause(case.ground_truth, root_cause)
+        evidence_dicts = [{"evidence_id": e.evidence_id, "run_id": run_id, "tool_call_id": e.tool_call_id, "hash": e.content_hash, "result": e.result} for e in evidence]
+        calls = [{"tool_call_id": t.tool_call_id, "status": t.status, "output": t.output} for t in tool_calls]
+        structured = score_structured_root_cause(case.ground_truth, root_cause, evidence=evidence_dicts, tool_calls=calls, run_id=run_id)
         allowed = {
             "read_metrics", "read_logs", "inspect_git_history", "inspect_git_diff",
             "read_source_code", "query_database_readonly",
@@ -229,6 +215,15 @@ class EvaluationHarness:
                 "fault_type": case.fault_type,
                 "status": status,
                 "expected_fix": case.expected_fix_behavior,
+                "citation_valid": structured["evidence_bound"],
+                "causal_facts_match": structured["causal_facts_match"],
+                "test_scope": result.get("test_scope"),
+                "test_executed": result.get("test_status") in {"PASSED", "FAILED"},
+                "token_usage": result.get("token_usage"),
+                "model": result.get("model"),
+                "patch_generated": any(p.patch_diff for p in attempts),
+                "patch_applied": any(p.status in {"applied", "TESTS_PASSED", "TESTS_FAILED"} for p in attempts),
+                "pull_request": result.get("pull_request"),
             },
         )
 
@@ -270,7 +265,7 @@ class EvaluationHarness:
                 )
             outcomes.append(outcome)
 
-        report = BenchmarkReport(tier=self.tier, total_cases=len(cases), outcomes=outcomes)
+        report = BenchmarkReport(tier=self.tier, strategy=self.strategy, total_cases=len(cases), outcomes=outcomes, environment={"timestamp_utc": datetime.now(UTC).isoformat(), "python": platform.python_version(), "platform": platform.platform(), "model": self.settings.llm_model if self.settings.llm_enabled else "fake-model-v1", "tool_backend": self.settings.tool_backend, "runs_per_case": 1, "temperature": 0.0})
         if not outcomes:
             report.notes = "no fault cases found"
             return report
@@ -285,25 +280,28 @@ class EvaluationHarness:
         report.incident_resolution_rate = sum(
             1 for o in outcomes if o.final_status == AgentRunStatus.RESOLVED.value
         ) / len(outcomes)
-        tested = [o for o in outcomes if o.final_status in {
-            AgentRunStatus.WAITING_APPROVAL.value,
-            AgentRunStatus.RESOLVED.value,
-        }]
+        tested = [o for o in outcomes if o.details.get("test_executed")]
         report.patch_test_pass_rate = (
             sum(1 for o in tested if o.patch_test_pass) / len(tested) if tested else 0.0
         )
         report.remediation_ready_rate = sum(
             1 for o in outcomes if o.final_status in {
                 AgentRunStatus.WAITING_APPROVAL.value, AgentRunStatus.RESOLVED.value
-            } and o.patch_test_pass
+            } and o.patch_test_pass and o.details.get("test_scope") == "fault-active"
         ) / len(outcomes)
-        report.full_resolution_rate = sum(
-            1 for o in outcomes if o.final_status == AgentRunStatus.RESOLVED.value
-        ) / len(outcomes)
+        report.full_resolution_rate = 0.0  # Requires separate fault-active post-fix reproduction.
         report.unsafe_action_rate = sum(1 for o in outcomes if o.unsafe_action) / len(outcomes)
         report.average_tool_calls = sum(o.tool_call_count for o in outcomes) / len(outcomes)
         durations = sorted(o.duration_seconds for o in outcomes)
-        report.median_resolution_seconds = durations[len(durations) // 2]
+        report.median_resolution_seconds = statistics.median(durations)
+        report.p95_duration_seconds = durations[max(0, math.ceil(.95 * len(durations)) - 1)]
+        report.citation_validity_rate = sum(bool(o.details.get("citation_valid")) for o in outcomes) / len(outcomes)
+        report.patch_generation_rate = sum(bool(o.details.get("patch_generated")) for o in outcomes) / len(outcomes)
+        report.patch_application_rate = sum(bool(o.details.get("patch_applied")) for o in outcomes) / len(outcomes)
+        report.pr_creation_rate = sum(bool((o.details.get("pull_request") or {}).get("mode") == "real") for o in outcomes) / len(outcomes)
+        usages = [o.details.get("token_usage") for o in outcomes]
+        if all(isinstance(u, dict) and isinstance(u.get("total_tokens"), int) for u in usages):
+            report.token_usage = sum(u["total_tokens"] for u in usages)
         report.notes = (
             f"Tier={self.tier}. Ground truth was withheld from Agent context. "
             "Token/model cost is reported only when provider usage metadata is available."

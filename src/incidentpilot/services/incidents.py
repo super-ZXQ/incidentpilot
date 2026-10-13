@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from incidentpilot.models.db import AgentRun, Approval, Incident
 from incidentpilot.models.enums import (
-    TERMINAL_RUN_STATUSES,
     AgentRunStatus,
     ApprovalDecision,
     IncidentStatus,
@@ -65,6 +64,9 @@ class RunService:
         return await repo.get_run_by_run_id(self.session, run_id)
 
     async def mark_running(self, run: AgentRun) -> AgentRun:
+        from incidentpilot.persistence.ownership import fence
+
+        await fence(self.session, run.run_id)
         changed = await self.session.execute(
             update(AgentRun)
             .where(
@@ -93,25 +95,32 @@ class RunService:
         root_cause: dict[str, Any] | None = None,
         finished: bool = False,
     ) -> AgentRun:
-        terminal_values = {item.value for item in TERMINAL_RUN_STATUSES}
-        if run.status in terminal_values and run.status != status.value:
+        from incidentpilot.models.enums import RUN_TRANSITIONS
+        from incidentpilot.persistence.ownership import fence
+
+        await fence(self.session, run.run_id)
+        previous_status = run.status
+        if status not in RUN_TRANSITIONS[AgentRunStatus(previous_status)]:
             raise RuntimeError(
                 f"terminal run transition denied: {run.status} -> {status.value}"
             )
-        run.status = status.value
+        values = {"status": status.value}
         if workflow_state is not None:
-            run.workflow_state = workflow_state
+            values["workflow_state"] = workflow_state
         if error is not None:
-            run.error = error
+            values["error"] = error
         if result is not None:
-            run.result = result
+            values["result"] = result
         if root_cause is not None:
-            run.root_cause = root_cause
+            values["root_cause"] = root_cause
         if finished:
-            run.finished_at = repo.utcnow()
-            run.worker_id = None
-            run.lease_expires_at = None
-            run.last_heartbeat_at = None
+            values.update(finished_at=repo.utcnow(), worker_id=None, lease_expires_at=None, last_heartbeat_at=None)
+        changed = await self.session.execute(update(AgentRun).where(
+            AgentRun.id == run.id, AgentRun.status == previous_status,
+        ).values(**values))
+        if changed.rowcount != 1:
+            await self.session.rollback()
+            raise RuntimeError("concurrent run status transition")
         await self.session.commit()
         await self.session.refresh(run)
         return run
@@ -130,7 +139,18 @@ class ApprovalService:
         reason: str = "",
         lease_seconds: int = 60,
         owner_id: str = "approval-api",
+        patch_artifact_id: str | None = None,
+        patch_hash: str | None = None,
     ):
+        from incidentpilot.services.artifacts import binding, validated_artifact
+
+        try:
+            artifact = await validated_artifact(self.session, run, patch_artifact_id)
+            if patch_hash is not None and patch_hash != artifact.patch_hash:
+                raise ValueError("approval patch hash mismatch")
+        except ValueError as exc:
+            await self.session.rollback()
+            raise ApprovalConflict(str(exc)) from exc
         target = (
             AgentRunStatus.NEEDS_HUMAN_INTERVENTION
             if decision == ApprovalDecision.REJECT
@@ -149,6 +169,7 @@ class ApprovalService:
             )
             .values(
                 status=target.value,
+                attempt_count=AgentRun.attempt_count + 1,
                 workflow_state=workflow_state,
                 worker_id=owner_id if decision == ApprovalDecision.APPROVE else None,
                 last_heartbeat_at=(repo.utcnow() if decision == ApprovalDecision.APPROVE else None),
@@ -164,6 +185,8 @@ class ApprovalService:
             raise ApprovalConflict("approval was already decided")
         approval = Approval(
             run_pk=run.id,
+            patch_artifact_id=artifact.patch_artifact_id,
+            payload=binding(artifact),
             decision=decision.value,
             actor=actor,
             reason=reason,
