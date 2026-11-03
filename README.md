@@ -120,6 +120,8 @@ Twenty fault cases and A/B/C evaluation share one scorer. Offline Fake results, 
 
 Requirements: Python 3.12, `uv`, Docker with Compose.
 
+### Host control plane, containerized reference environment
+
 ```bash
 uv sync --extra dev
 docker compose build sandbox-image
@@ -128,6 +130,36 @@ uv run alembic upgrade head
 uv run uvicorn incidentpilot.api.app:create_app --factory --port 8000
 uv run python -m incidentpilot.worker
 ```
+
+### Whole stack in Compose
+
+`incidentpilot-migrate` (Alembic one-shot) → `incidentpilot-app` + `incidentpilot-worker`:
+
+```bash
+cp .env.example .env       # then set API_TOKENS and IP_WORKSPACES in .env
+docker compose up -d --build
+curl -s http://127.0.0.1:8000/health
+```
+
+`API_TOKENS` has no default, so Compose refuses to start without it. `IP_WORKSPACES`
+must be an absolute host directory: the worker starts sandbox containers through the
+host daemon, and a directory is only shareable with them at the identical absolute
+path, so that path is bind-mounted into the worker and used as its `TMPDIR`. All
+published ports are bound to `127.0.0.1`, including both PostgreSQL instances.
+
+The worker reaches the daemon socket through `group_add: ["root"]` — the socket is
+`root:root 0660`, so a non-root uid needs that group. This is Docker-out-of-Docker:
+the worker holds root-equivalent control of the daemon, which is acceptable for a local
+deployment and is why every published port is loopback-only. A restricted socket proxy
+is the alternative if this stack ever leaves a laptop.
+
+What the containerized stack was actually exercised with, on 2026-11-03: Alembic to
+`0005_security_bindings`, `/health` 200, the worker claiming a queued run and reading
+live metrics and logs over MCP, and one nested sandbox container running pytest with the
+manager's flags. It did **not** complete a patch/test/approval loop: `inspect_git_history`
+and `inspect_git_diff` need `REFERENCE_REPO_PATH` to be a real Git repository, the image
+carries no `.git`, and a bind-mounted source directory alone is not one. Run the
+remediation loop from the host quick start above until a Git fixture is wired up.
 
 Suggested environment:
 
@@ -147,6 +179,11 @@ GITHUB_INTEGRATION_ENABLED=false
 
 For a real model also set `LLM_ENABLED=true`, `LLM_PROVIDER=openai-compatible`, `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`. Never commit `.env`.
 
+Dependencies resolve through the Aliyun PyPI mirror declared in `pyproject.toml`, which
+is also what `uv.lock` records. The `sha256` hashes in the lock are PyPI's own and stay
+verified no matter which host serves the file, but every build — including CI — needs to
+reach that mirror. Change `[[tool.uv.index]]` and re-run `uv lock` to move elsewhere.
+
 ## API
 
 - `POST /v1/incidents` — persist Incident/AgentRun and return `202`
@@ -163,7 +200,7 @@ For a real model also set `LLM_ENABLED=true`, `LLM_PROVIDER=openai-compatible`, 
 - `GET /health` — public liveness
 - `GET /demo` — public static shell; all investigation data requires authentication
 
-Incident submission only persists Incident/AgentRun state; approval recovery executes under a leased, heartbeating Worker context. Production mode does **not** execute investigations inside the API process. PostgreSQL is the queue and coordination store; independent workers (`python -m incidentpilot.worker`) atomically claim rows with `FOR UPDATE SKIP LOCKED`, renew leases, and resume expired work from LangGraph checkpoints. `EMBEDDED_WORKER_ENABLED=true` exists **only for tests and local development**. Queue saturation returns `429` with `RUN_QUEUE_FULL`.
+Incident submission only persists Incident/AgentRun state; approval recovery executes under a leased, heartbeating Worker context. `POST /v1/runs/{run_id}/approval` returns as soon as the decision is durable: `APPROVE` puts the run back in the queue and the pull request appears only after a worker resumes it, so clients poll the run rather than assume the response did the work. Production mode does **not** execute investigations inside the API process. PostgreSQL is the queue and coordination store; independent workers (`python -m incidentpilot.worker`) atomically claim rows with `FOR UPDATE SKIP LOCKED`, renew leases, and resume expired work from LangGraph checkpoints. `EMBEDDED_WORKER_ENABLED=true` exists **only for tests and local development**. Queue saturation returns `429` with `RUN_QUEUE_FULL`.
 
 Experiments that were actually executed are listed in `docs/RESILIENCE_REPORT.md`. Unexecuted items (e.g. Locust on this host, real GitHub PRs) are marked not executed and are not claimed as verified.
 

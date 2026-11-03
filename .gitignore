@@ -39,6 +39,9 @@ reference/**/__pycache__/
 # Docker
 .docker-cache/
 
+# Compose worker sandbox workspaces (bind-mounted into the worker at the same path)
+.ip-workspaces/
+
 # Local browser inspection artifacts
 .playwright-cli/
 .impeccable/review/

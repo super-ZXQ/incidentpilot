@@ -37,6 +37,15 @@ jobs:
           DATABASE_URL: postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app
       - name: Build sandbox for behavioral isolation tests
         run: docker build -f docker/sandbox.Dockerfile -t incidentpilot-sandbox:py312 .
+      # The audit fixtures create their own tables, and the schema-bootstrap gate
+      # asserts a database with *no* tables, so neither may share the migrated
+      # incidentpilot_app that the rest of the suite reads.
+      - name: Create disposable test databases
+        run: >-
+          PGPASSWORD=incidentpilot psql -h 127.0.0.1 -U incidentpilot -d postgres
+          -v ON_ERROR_STOP=1
+          -c "CREATE DATABASE incidentpilot_audit OWNER incidentpilot"
+          -c "CREATE DATABASE incidentpilot_empty OWNER incidentpilot"
       - name: Pytest
         run: uv run pytest -q
         env:
@@ -45,5 +54,6 @@ jobs:
           GITHUB_INTEGRATION_ENABLED: "false"
           SANDBOX_ENABLED: "false"
           TOOL_BACKEND: "fake"
-          AUDIT_POSTGRES_URL: postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app
+          AUDIT_POSTGRES_URL: postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_audit
           POSTGRES_TEST_URL: postgresql://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app
+          POSTGRES_EMPTY_URL: postgresql://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_empty

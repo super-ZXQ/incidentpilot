@@ -66,3 +66,11 @@ ignore = ["E501", "B008"]
 
 [tool.uvicorn]
 factory = true
+
+# uv.lock records packages fetched from this mirror, so re-resolution from a clean checkout
+# keeps the same source and produces no URL-only diff. PyPI direct is ~22KB/s on the
+# network this project is developed on; the sha256 hashes in uv.lock are PyPI's own and
+# are verified against it regardless of which host serves the file.
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true
