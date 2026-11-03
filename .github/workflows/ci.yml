@@ -98,3 +98,30 @@ jobs:
           POSTGRES_EMPTY_URL: postgresql://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_empty
           AUDIT_REFERENCE_DB_URL: postgresql://reference_readonly:reference_readonly@127.0.0.1:5432/orders
           AUDIT_REFERENCE_ADMIN_URL: postgresql://reference:reference@127.0.0.1:5432/orders
+
+  # Windows carries production code paths — the Selector event loop psycopg requires,
+  # `taskkill` process-tree cancellation, and the local sandbox — that the Linux job can
+  # never execute. Windows runners offer no PostgreSQL service and no sandbox image, so
+  # database and Docker tests skip here; that is also why this job does not enforce the
+  # coverage floor, which is calibrated on the full Linux run.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync
+        run: uv sync --extra dev
+      - name: Ruff
+        run: uv run ruff check .
+      - name: Pytest without external services
+        run: uv run pytest -q
+        env:
+          OTEL_CONSOLE_EXPORTER: "false"
+          LLM_ENABLED: "false"
+          GITHUB_INTEGRATION_ENABLED: "false"
+          SANDBOX_ENABLED: "false"
+          TOOL_BACKEND: "fake"
