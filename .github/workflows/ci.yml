@@ -33,9 +33,14 @@ jobs:
         run: uv run ruff check .
       # A key misplaced inside `environment:` is a YAML error that only shows up on the
       # laptop that runs `docker compose up` — and it fails quietly for the metrics port,
-      # because the worker then never gets its scrape endpoint.
+      # because the worker then never gets its scrape endpoint. The chaos overlay carries
+      # the Toxiproxy services and is never started by the default `up`, so it rots
+      # silently unless the merged config is checked here too.
       - name: Validate Compose interpolation
-        run: docker compose config --quiet
+        run: |-
+          set -euo pipefail
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.chaos.yml config --quiet
         env:
           API_TOKENS: '{}'
           IP_WORKSPACES: /tmp/ip-workspaces

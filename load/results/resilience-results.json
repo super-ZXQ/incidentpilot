@@ -1,13 +1,137 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-09-18T01:16:00+00:00",
+  "generated_at": "2026-11-03T06:17:07Z",
   "traffic_kind": "synthetic",
   "real_github": false,
   "real_llm": false,
+  "host_attribution": {
+    "2026-09-18": "Windows host, standalone docker-compose v5.1.4",
+    "2026-11-03": "macOS host with the docker compose plugin, plus GitHub-hosted ubuntu-latest"
+  },
   "experiments": [
     {
-      "name": "automated_resilience_suite",
+      "name": "full_test_suite_ci",
       "status": "EXECUTED",
+      "host": "github-hosted ubuntu-latest",
+      "measured_at": "2026-11-03T03:48:35Z",
+      "measurements": {
+        "passed": 219,
+        "failed": 0,
+        "skipped": 3,
+        "skip_reasons": ["2 require os.name == 'nt' (Windows tasklist)", "1 requires LLM_API_KEY"],
+        "warnings": 55,
+        "duration_seconds": 162.25,
+        "workflow_run": 41574057091,
+        "commit": "f58ff51"
+      }
+    },
+    {
+      "name": "full_test_suite_local_macos",
+      "status": "EXECUTED",
+      "host": "macOS",
+      "measured_at": "2026-11-03",
+      "measurements": {
+        "passed_with_reference_role_urls": 219,
+        "skipped_with_reference_role_urls": 3,
+        "duration_seconds_latest": 118.15,
+        "earlier_samples_same_date": [
+          {"summary": "219 passed, 3 skipped", "duration_seconds": 119.63},
+          {"summary": "218 passed, 4 skipped (without the reference role URLs)", "duration_seconds": 122.0}
+        ],
+        "ruff": "All checks passed"
+      }
+    },
+    {
+      "name": "sql_least_privilege_role_check_in_ci",
+      "status": "EXECUTED",
+      "host": "github-hosted ubuntu-latest",
+      "measured_at": "2026-11-03T03:48:35Z",
+      "measurements": {
+        "before_fixture_run": 41572899582,
+        "before_fixture_summary": "218 passed, 4 skipped",
+        "after_fixture_run": 41574057091,
+        "after_fixture_summary": "219 passed, 3 skipped",
+        "falsification_granting_insert_to_readonly_role": "database role has write privileges",
+        "falsification_denying_readonly_login": "role \"reference_readonly\" is not permitted to log in",
+        "fixture_image": "postgres:16-alpine"
+      }
+    },
+    {
+      "name": "alembic_postgresql_upgrade",
+      "status": "EXECUTED",
+      "host": "github-hosted ubuntu-latest",
+      "measured_at": "2026-11-03",
+      "measurements": {
+        "revision": "0005_security_bindings (head)",
+        "result": "PASS",
+        "database": "fresh postgres:16-alpine service",
+        "workflow_run": 41574057091
+      }
+    },
+    {
+      "name": "containerized_remediation_loop_live_stack",
+      "status": "EXECUTED",
+      "host": "macOS Compose stack",
+      "measured_at": "2026-11-03",
+      "measurement_window": "before commit 39d2053 at 2026-11-03T03:08:06Z",
+      "measurements": {
+        "stages": [
+          "queue claim",
+          "live MCP metrics and logs",
+          "inspect_git_history on the fixture repository",
+          "patch",
+          "nested sandbox container pytest PASSED exit 0",
+          "WAITING_APPROVAL",
+          "APPROVE",
+          "re-queue",
+          "CREATE_PULL_REQUEST",
+          "RESOLVED"
+        ],
+        "base_commit_sha_kind": "real 40-hex HEAD",
+        "github": "mock PR only",
+        "fault_injected": false,
+        "proves": "the pipeline executes",
+        "does_not_prove": "diagnosis quality"
+      }
+    },
+    {
+      "name": "worker_queue_metrics_scraped_from_owning_process",
+      "status": "EXECUTED",
+      "host": "macOS Compose stack",
+      "measured_at": "2026-11-03",
+      "measurement_window": "before commit f6011df at 2026-11-03T02:31:25Z",
+      "measurements": {
+        "queued_runs": 3,
+        "worker_target": {
+          "incidentpilot_queue_depth": 3,
+          "incidentpilot_active_runs": 2
+        },
+        "api_target": {
+          "incidentpilot_queue_depth": 0,
+          "incidentpilot_active_runs": 0
+        },
+        "worker_metrics_port": 9102,
+        "published_on_host": false
+      }
+    },
+    {
+      "name": "compose_and_chaos_configuration_validation",
+      "status": "EXECUTED",
+      "host": "macOS",
+      "measured_at": "2026-11-03T06:33:03Z",
+      "measurements": {
+        "base_config_exit_code": 0,
+        "merged_config_exit_code": 0,
+        "merged_command": "docker compose -f docker-compose.yml -f docker-compose.chaos.yml config --quiet",
+        "toxiproxy_image": "ghcr.io/shopify/toxiproxy:2.9.0",
+        "ci_gates_both_files": true,
+        "ci_observed_for_merged_gate": false
+      }
+    },
+    {
+      "name": "automated_resilience_suite",
+      "status": "SUPERSEDED",
+      "host": "Windows",
       "measured_at": "2026-09-18T01:20:00Z",
       "measurements": {
         "passed": 78,
@@ -17,52 +141,54 @@
         "warnings": 1,
         "duration_seconds": 76.55,
         "ruff": "All checks passed",
-        "compose_config": "PASS"
+        "compose_config": "PASS",
+        "superseded_by": "full_test_suite_ci"
       }
     },
     {
       "name": "postgres_two_worker_claim",
       "status": "EXECUTED",
+      "host": "Windows",
+      "measured_at": "2026-09-18T01:16:00Z",
       "measurements": {"competing_claimers": 2, "successful_claims": 1, "result": "PASS"}
     },
     {
       "name": "mcp_stdio_live",
       "status": "EXECUTED",
+      "host": "Windows",
+      "measured_at": "2026-09-18T01:16:00Z",
       "measurements": {"passed": 1, "failed": 0}
     },
     {
       "name": "docker_sandbox_live",
       "status": "EXECUTED",
+      "host": "Windows",
+      "measured_at": "2026-09-18T01:16:00Z",
       "measurements": {"passed": 2, "failed": 0}
     },
     {
       "name": "reference_fault_lifecycle",
       "status": "EXECUTED",
+      "host": "Windows",
+      "measured_at": "2026-09-18T01:16:00Z",
       "measurements": {"passed": 11, "failed": 0}
     },
     {
       "name": "alembic_empty_database_upgrade_sqlite",
       "status": "EXECUTED",
-      "measurements": {"revision": "0004_worker_leases", "result": "PASS"}
-    },
-    {
-      "name": "alembic_postgresql_upgrade",
-      "status": "EXECUTED",
-      "measurements": {"revision": "0004_worker_leases (head)", "result": "PASS", "dialect": "PostgresqlImpl"}
-    },
-    {
-      "name": "compose_chaos_configuration_validation",
-      "status": "EXECUTED",
+      "host": "Windows",
+      "measured_at": "2026-09-18T01:16:00Z",
       "measurements": {
+        "revision": "0004_worker_leases",
+        "current_head": "0005_security_bindings",
         "result": "PASS",
-        "toxiproxy_image": "ghcr.io/shopify/toxiproxy:2.9.0",
-        "image_digest_sample": "sha256:b44c283298cea49e2defaba1b3028783798346f2a926684e3a345fd8441af3b8",
-        "compose_command": "docker-compose -f docker-compose.yml -f docker-compose.chaos.yml config --quiet"
+        "note": "not re-run since 2026-09-18"
       }
     },
     {
       "name": "postgres_latency_disconnect",
       "status": "EXECUTED",
+      "host": "Windows",
       "measured_at": "2026-09-18T01:13:30Z",
       "measurements": {
         "proxy": "127.0.0.1:15432 -> incidentpilot-postgres:5432",
@@ -77,6 +203,7 @@
     {
       "name": "mcp_timeout_reset",
       "status": "EXECUTED",
+      "host": "Windows",
       "measured_at": "2026-09-18T01:13:47Z",
       "measurements": {
         "orders_api_direct_avg_ms_sample": [1162.82, 1053.98, 1357.76],
@@ -91,6 +218,7 @@
     {
       "name": "github_429_500_mock",
       "status": "EXECUTED",
+      "host": "Windows",
       "measured_at": "2026-09-18T01:14:29Z",
       "measurements": {
         "real_github": false,
@@ -104,11 +232,13 @@
       "name": "locust_concurrent_api",
       "status": "NOT_EXECUTED",
       "measurements": {},
-      "note": "Synthetic locustfile present; headless run blocked by local uvicorn factory/startup on this host; no production traffic claimed"
+      "note": "Synthetic locustfile present; headless run blocked by local uvicorn factory/startup on the 2026-09-18 host; no production traffic claimed"
     },
     {
       "name": "worker_process_kill_recovery",
       "status": "EXECUTED",
+      "host": "Windows",
+      "measured_at": "2026-09-18T01:16:00Z",
       "measurements": {
         "result": "PASS",
         "first_attempt_count": 1,
@@ -120,6 +250,7 @@
     {
       "name": "dual_worker_process_postgres",
       "status": "EXECUTED",
+      "host": "Windows",
       "measured_at": "2026-09-18T01:15:45Z",
       "measurements": {
         "workers_spawned": 2,

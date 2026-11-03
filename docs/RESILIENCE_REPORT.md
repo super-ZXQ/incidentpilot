@@ -2,6 +2,10 @@
 
 This report separates verified automated behavior from experiments that have not run. It contains no production traffic and no invented measurements. Machine-readable status is in `load/results/resilience-results.json`.
 
+Every measurement is attributed to the host and date it was taken, because they are not the
+same machine: the 2026-09-18 rows ran on a Windows host with standalone `docker-compose`, and
+the 2026-11-03 rows ran on macOS with the Compose plugin plus GitHub-hosted `ubuntu-latest` CI.
+
 ## Verified by automated tests
 
 - A live lease cannot be claimed by a second worker; an expired lease can be recovered.
@@ -14,15 +18,30 @@ This report separates verified automated behavior from experiments that have not
 - Stale workers cannot renew a lease after another worker takes ownership.
 - Approval persisted before graph resume remains recoverable after worker crash.
 - P1 tests cover heartbeat ownership loss, approval-crash recovery, evidence replay, GitHub mock idempotency, and attempt increment on crash recovery.
+- An approval decision is executed by a leased worker after the run is re-queued, not inside the HTTP request, so a disconnected client cannot cancel the resumed graph or the GitHub call it makes.
+- Graph resume is bounded by a timeout, and a heartbeat survives a transient database error instead of abandoning a live lease (`tests/test_approval_handoff.py` 3 tests, `tests/test_worker_resilience.py` 9 tests).
+- Queue and lease gauges are published only by the process that owns them, and with no port configured the worker binds nothing at all (`tests/test_metrics_export.py`, 2 tests).
+- The reference Git fixture produces a repository whose HEAD tree equals the deployed source, and refuses to write into a destination owned by another uid rather than destroying a working repository first (`tests/test_reference_git_fixture.py`, 3 tests).
+- Outside `development` the schema is Alembic-only: the empty-database gate asserts zero tables, so an auto-`create_all` path fails the suite instead of silently diverging from migrations.
 
-## Experiment status
+## Experiment status — 2026-11-03 (macOS host, GitHub-hosted ubuntu-latest)
 
 | Experiment | Status | Measurements |
 |---|---|---|
-| Automated resilience/full test suite | Executed | `78 passed, 1 skipped (LLM_API_KEY), 1 warning` in 76.55s |
-| Empty-database Alembic upgrade (SQLite) | Executed | `0004_worker_leases (head)` |
-| PostgreSQL Alembic upgrade | Executed | `0004_worker_leases (head)` dialect `PostgresqlImpl` |
-| Combined base/chaos Compose validation | Executed | PASS via `docker-compose -f docker-compose.yml -f docker-compose.chaos.yml config --quiet` |
+| Full test suite in CI | Executed | `219 passed, 3 skipped, 55 warnings in 162.25s` (run 41574057091, commit `f58ff51`). The 3 skips are environmental: 2 require `os.name == "nt"` (Windows `tasklist`), 1 requires `LLM_API_KEY`. |
+| Full test suite on macOS | Executed | `219 passed, 3 skipped in 118.15s` after this report was refreshed; `219 passed, 3 skipped in 119.63s` with the reference role URLs configured earlier the same day, and `218 passed, 4 skipped in 122.00s` without them. |
+| SQL least-privilege role check in CI | Executed | Same commit, before/after the fixture: run 41572899582 `218 passed, 4 skipped` → run 41574057091 `219 passed, 3 skipped`. The check can fail: granting `INSERT` to `reference_readonly` produces `database role has write privileges`, and denying it login produces a connection refusal — both verified on `postgres:16-alpine`. |
+| PostgreSQL Alembic upgrade | Executed | CI step against a fresh `postgres:16-alpine` service, head `0005_security_bindings`. |
+| Containerized remediation loop (live Compose stack) | Executed | Measured before 03:08:06Z (commit `39d2053`). Queued run → live MCP metrics and logs → `inspect_git_history` on the fixture repository → patch → nested sandbox container pytest `PASSED`, exit 0 → `WAITING_APPROVAL` → APPROVE → re-queue → `CREATE_PULL_REQUEST` → `RESOLVED` with the mock PR. `base_commit_sha` was a real 40-hex HEAD, not `UNVERSIONED`. **No fault was injected, so this proves the pipeline runs, not that the agent diagnoses correctly.** |
+| Worker queue metrics scraped from the owning process | Executed | Measured before 02:31:25Z (commit `f6011df`). Three queued runs reported `incidentpilot_queue_depth 3` / `incidentpilot_active_runs 2` on the worker target while the API process reported `0` for the same gauges. |
+| Base and chaos Compose validation | Executed | `docker compose config --quiet` and `docker compose -f docker-compose.yml -f docker-compose.chaos.yml config --quiet` both exit 0 on macOS at 06:33:03Z. As of this commit CI runs both; the merged check had not yet been observed in a pipeline when this line was written. |
+
+## Experiment status — 2026-09-18 (Windows host, standalone `docker-compose` v5.1.4)
+
+| Experiment | Status | Measurements |
+|---|---|---|
+| Automated resilience/full test suite | Executed | `78 passed, 1 skipped (LLM_API_KEY), 1 warning` in 76.55s — superseded by the 2026-11-03 rows above. |
+| Empty-database Alembic upgrade (SQLite) | Executed | `0004_worker_leases (head)` at that date; the current head is `0005_security_bindings`. |
 | Toxiproxy image pin | Executed | `ghcr.io/shopify/toxiproxy:2.9.0` (Docker Hub `shopify/toxiproxy:2.9.0` does not exist) |
 | Local two-worker PostgreSQL competition | Executed | Two concurrent claimers, exactly one successful claim |
 | Worker process termination and lease recovery | Executed | Attempt 1→2; replacement reached `WAITING_APPROVAL`; GitHub disabled |
@@ -37,13 +56,23 @@ This report separates verified automated behavior from experiments that have not
 
 ## Chaos compose note
 
-On this Windows host the Compose CLI is `docker-compose` (standalone v5.1.4); `docker compose` plugin is not available. Toxiproxy runs from the GHCR pin above.
+The 2026-09-18 experiments ran on a Windows host where the Compose CLI is standalone
+`docker-compose` v5.1.4 and the `docker compose` plugin is unavailable; on macOS and in CI the
+`docker compose` plugin is used. Both spellings address the same two files, and CI now
+validates the merged configuration rather than only the base file.
 
-Run synthetic load with `uv run --with locust locust -f load/locustfile.py --host http://127.0.0.1:8000`. Start controlled proxies and two workers with `docker-compose -f docker-compose.yml -f docker-compose.chaos.yml up`. Clean up with the matching `down`; no experiment targets real GitHub by default.
+Run synthetic load with `uv run --with locust locust -f load/locustfile.py --host http://127.0.0.1:8000`. Start controlled proxies and two workers with `docker compose -f docker-compose.yml -f docker-compose.chaos.yml up`. Clean up with the matching `down`; no experiment targets real GitHub by default.
 
 ## Honesty boundaries
 
 - No real production traffic was measured.
 - No real GitHub Pull Requests were created.
-- No real LLM benchmark is claimed in this report without credentials.
+- No real LLM benchmark is claimed in this report without credentials, and FakeModel evidence
+  cannot speak to whether a real model would be semantically misled by injected content.
 - Chaos numbers are local synthetic measurements, not enterprise SLOs.
+- The containerized remediation loop ran **without an injected fault**: it demonstrates that
+  evidence collection, patching, testing, approval and the PR step all execute, not that the
+  agent identifies a real cause correctly.
+- The reference repository built by `incidentpilot-refgit` is a reconstruction of the deployed
+  tree in two commits, not the project's deployment history, and the injected faults are
+  in-process state in `faults.py` that no commit describes.
