@@ -213,8 +213,11 @@ async def test_repository_names_the_configured_repo_not_the_worker_cwd(
     assert module._resolve_reference_repo(str(configured)) == configured
     # A relative string never becomes a path the caller controls.
     assert module._resolve_reference_repo("../../etc") == configured
+    # `/etc` is rooted but not absolute on Windows, so it is a label there; only a
+    # platform-absolute path outside the repository may trigger the rejection.
+    outside = tmp_path / "outside"
     with pytest.raises(ValueError, match="outside the configured reference repository"):
-        module._resolve_reference_repo("/etc")
+        module._resolve_reference_repo(str(outside))
 
     history = module.inspect_git_history("reference/orders_api")
     assert "error" not in history

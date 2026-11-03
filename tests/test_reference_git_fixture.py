@@ -60,6 +60,38 @@ def test_rebuilding_a_populated_destination_keeps_the_mount_point(tmp_path: Path
     assert _git(destination, "status", "--porcelain") == ""
 
 
+def test_clearing_a_rebuilt_destination_retries_read_only_git_objects(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Git's loose objects are read-only, and Windows refuses to delete them."""
+    import os
+
+    from incidentpilot.benchmarks.reference_git_fixture import _clear
+
+    destination = tmp_path / "volume"
+    objects = destination / ".git" / "objects" / "2e"
+    objects.mkdir(parents=True)
+    loose = objects / "b70d"
+    loose.write_text("object", encoding="utf-8")
+    os.chmod(loose, 0o444)
+
+    real_unlink = os.unlink
+    refusals = {"remaining": 1}
+
+    def windows_like_unlink(path, *args, **kwargs):
+        if str(path).endswith("b70d") and refusals["remaining"]:
+            refusals["remaining"] -= 1
+            raise PermissionError(13, "Access is denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", windows_like_unlink)
+
+    _clear(destination)
+
+    assert refusals["remaining"] == 0, "the first unlink was never refused"
+    assert not (destination / ".git").exists()
+
+
 def test_the_shipped_reference_tree_builds_without_losing_source_files(tmp_path: Path) -> None:
     """The exclusions must not drop anything the reference API actually serves."""
     source = Path(__file__).resolve().parents[1] / "reference" / "orders_api"

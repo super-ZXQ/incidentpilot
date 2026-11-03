@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -58,10 +59,17 @@ def _is_deferred(relative_path: str) -> bool:
 
 
 def _clear(destination: Path) -> None:
+    # Git marks loose objects read-only; POSIX unlink ignores that bit, Windows refuses
+    # to delete the file. Clear the bit and retry whatever operation failed.
+    def make_writable_and_retry(func, path, exc):
+        del exc
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+
     # The destination is a mount point, so only its children may be removed.
     for child in destination.iterdir():
         if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child)
+            shutil.rmtree(child, onexc=make_writable_and_retry)
         else:
             child.unlink()
 
