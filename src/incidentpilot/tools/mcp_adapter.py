@@ -194,12 +194,16 @@ def register_mcp_readonly_tools(registry: ToolRegistry, adapter: MCPReadonlyAdap
             name="read_source_code",
             description="Read source code via MCP",
             category="readonly_external",
-            handler=lambda path="app.py", repository="": _call(
-                "read_source_code", path=path, repository=repository
+            handler=lambda path="app.py", repository="", start_line=1: _call(
+                "read_source_code", path=path, repository=repository, start_line=start_line
             ),
             input_schema={
                 "type": "object",
-                "properties": {"path": {"type": "string"}, "repository": {"type": "string"}},
+                "properties": {
+                    "path": {"type": "string"},
+                    "repository": {"type": "string"},
+                    "start_line": {"type": "integer", "minimum": 1},
+                },
                 "required": ["path"],
                 "additionalProperties": False,
             },

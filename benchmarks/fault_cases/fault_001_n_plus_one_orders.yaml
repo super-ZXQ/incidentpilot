@@ -3,7 +3,7 @@ title: orders-api P95 latency spike from N+1 item loading
 category: database_performance
 fault_type: n_plus_one_query
 params:
-  per_row_delay: 0.05
+  per_row_delay: 0.35
   service: orders-api
   endpoint: /orders
 
@@ -25,6 +25,14 @@ ground_truth:
   causal_facts:
     - list_orders performs one OrderItem query per order
     - per-order access raises orders endpoint P95 latency
+  # A conclusion only counts as grounded when at least one cited observation
+  # actually contains the injected code path, not just telemetry that agrees.
+  injection_evidence:
+    path: app.py
+    markers:
+      - "for order in orders"
+      - "OrderItem.order_id == order.id"
+      - "select_items_per_order"
   primary_evidence_sources:
     - metrics
     - logs

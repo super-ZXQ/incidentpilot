@@ -56,12 +56,42 @@ def score_structured_root_cause(ground_truth: dict[str, Any], agent_rc: dict[str
     valid = valid_evidence(evidence or [], tool_calls or [], run_id)
     known = {item["evidence_id"] for item in valid}
     evidence_ok = bool(ids) and set(ids).issubset(known)
+    injection_ok = _citations_reach_injection(ground_truth, ids, valid)
     structured_ok = category_ok and comp_ok and facts_ok and evidence_ok
     return {
         "category_ok": category_ok,
         "component_ok": comp_ok,
         "causal_facts_ok": facts_ok,
         "evidence_bound": evidence_ok,
+        "injection_hit": injection_ok,
         "causal_facts_match": facts_ok,
         "structured_ok": structured_ok,
     }
+
+
+def _citations_reach_injection(
+    ground_truth: dict[str, Any], ids: list[str], valid: list[dict[str, Any]]
+) -> bool:
+    """True only when a cited observation contains the injected code path.
+
+    A valid citation proves the output existed; it does not prove the conclusion
+    rests on the place the fault was injected. A model can cite metrics that agree
+    with the symptom and still never observe the defective loop.
+    """
+    injection = ground_truth.get("injection_evidence") or {}
+    markers = [str(marker) for marker in injection.get("markers") or []]
+    if not ids or not markers:
+        return False
+    cited = {item["evidence_id"]: item for item in valid if item["evidence_id"] in set(ids)}
+    expected_path = str(injection.get("path") or "")
+    for item in cited.values():
+        result = item.get("result") or {}
+        observed_path = str(result.get("path") or "").replace("\\", "/")
+        if expected_path and not (
+            observed_path == expected_path or observed_path.endswith("/" + expected_path)
+        ):
+            continue
+        content = str(result.get("content") or "")
+        if all(marker in content for marker in markers):
+            return True
+    return False

@@ -23,6 +23,10 @@ the 2026-11-03 rows ran on macOS with the Compose plugin plus GitHub-hosted `ubu
 - Queue and lease gauges are published only by the process that owns them, and with no port configured the worker binds nothing at all (`tests/test_metrics_export.py`, 2 tests).
 - The reference Git fixture produces a repository whose HEAD tree equals the deployed source, and refuses to write into a destination owned by another uid rather than destroying a working repository first (`tests/test_reference_git_fixture.py`, 3 tests).
 - Outside `development` the schema is Alembic-only: the empty-database gate asserts zero tables, so an auto-`create_all` path fails the suite instead of silently diverging from migrations.
+- `read_source_code` returns one line-aligned window near 3,200 characters with `start_line`/`end_line`/`total_lines`/`has_more`, so a file larger than the Agent's 4,000-character projection cap can still be read to its end; the paged test walks `reference/orders_api/app.py` and asserts the window containing the injected loop is reachable (`tests/test_phase4_mcp.py`). `has_more`, not `truncated`, is the field name because the gateway rejects truncated payloads as incomplete.
+- An over-budget context envelope drops the oldest evidence entries and records `omitted_items` instead of replacing every observation with an excerpt of its own JSON (`tests/test_audit_tools.py`).
+- Structured-output repair tells the model which field failed and shows the rejected output; measured against deepseek-flash, a blind re-ask silently replaced two intended observations with different tool calls (`tests/test_audit_reliability.py`).
+- The evaluator's `injection_hit` assertion requires at least one conclusion citation to contain the fault case's `injection_evidence` markers in the injected file; valid citations to agreeing telemetry alone do not satisfy it (`tests/test_audit_tools.py`).
 
 ## Experiment status — 2026-11-03 (macOS host, GitHub-hosted ubuntu-latest)
 
@@ -34,7 +38,8 @@ the 2026-11-03 rows ran on macOS with the Compose plugin plus GitHub-hosted `ubu
 | PostgreSQL Alembic upgrade | Executed | CI step against a fresh `postgres:16-alpine` service, head `0005_security_bindings`. |
 | Containerized remediation loop (live Compose stack) | Executed | Measured before 03:08:06Z (commit `39d2053`). Queued run → live MCP metrics and logs → `inspect_git_history` on the fixture repository → patch → nested sandbox container pytest `PASSED`, exit 0 → `WAITING_APPROVAL` → APPROVE → re-queue → `CREATE_PULL_REQUEST` → `RESOLVED` with the mock PR. `base_commit_sha` was a real 40-hex HEAD, not `UNVERSIONED`. **No fault was injected, so this proves the pipeline runs, not that the agent diagnoses correctly.** |
 | Worker queue metrics scraped from the owning process | Executed | Measured before 02:31:25Z (commit `f6011df`). Three queued runs reported `incidentpilot_queue_depth 3` / `incidentpilot_active_runs 2` on the worker target while the API process reported `0` for the same gauges. |
-| Base and chaos Compose validation | Executed | `docker compose config --quiet` and `docker compose -f docker-compose.yml -f docker-compose.chaos.yml config --quiet` both exit 0 on macOS at 06:33:03Z. As of this commit CI runs both; the merged check had not yet been observed in a pipeline when this line was written. |
+| Base and chaos Compose validation | Executed | `docker compose config --quiet` and `docker compose -f docker-compose.yml -f docker-compose.chaos.yml config --quiet` both exit 0 on macOS at 06:33:03Z. The gate runs in CI on every push (`.github/workflows/ci.yml`, added with commit `5c3b286`); the macOS invocation above is the last recorded local measurement of it. |
+| Real-model investigation of an injected fault (deepseek-flash) | Executed | Run `RUN-3232bb93aa4b` on 2026-11-03, DeepSeek `deepseek-flash`, live MCP tools against the reference stack, `real_llm_investigation` tier, ground truth withheld. Reached `INVESTIGATION_COMPLETE` in 113.6s with 7 tool calls (metrics, git history, three source windows, logs, faults.py) and 7 evidence items; tokens `54,450 / 15,266 / 69,716` (prompt/completion/total). `evidence_bound` true, component correct, causal facts matched, and the new `injection_hit` assertion true: the cited `EVID-5f4d020a0a9e` is the `app.py` window containing `for order in orders`, `OrderItem.order_id == order.id` and `select_items_per_order`. The agent still answered `application_bug` against the declared `database_performance` category, so `root_cause_correct` is false — the loop is grounded in the injected site, but the diagnosis hedged across fault sub-types. |
 
 ## Experiment status — 2026-09-18 (Windows host, standalone `docker-compose` v5.1.4)
 
@@ -67,8 +72,10 @@ Run synthetic load with `uv run --with locust locust -f load/locustfile.py --hos
 
 - No real production traffic was measured.
 - No real GitHub Pull Requests were created.
-- No real LLM benchmark is claimed in this report without credentials, and FakeModel evidence
-  cannot speak to whether a real model would be semantically misled by injected content.
+- The deepseek-flash row is a single run of a single fault case, not an accuracy benchmark;
+  it shows the investigation loop can complete and be grounded in the injected code, not
+  that the model diagnoses every case. FakeModel evidence cannot speak to whether a real
+  model would be semantically misled by injected content.
 - Chaos numbers are local synthetic measurements, not enterprise SLOs.
 - The containerized remediation loop ran **without an injected fault**: it demonstrates that
   evidence collection, patching, testing, approval and the PR step all execute, not that the

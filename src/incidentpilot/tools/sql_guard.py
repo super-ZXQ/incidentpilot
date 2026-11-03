@@ -75,7 +75,7 @@ ALLOWED_SCHEMA = {
     "order_items": {"id", "order_id", "sku", "qty", "price_cents"},
     "customers": {"id"},
 }
-ALLOWED_FUNCTIONS = {"COUNT", "SUM", "MIN", "MAX", "AVG", "COALESCE", "CAST", "LOWER", "UPPER", "LENGTH", "ABS"}
+ALLOWED_FUNCTIONS = {"COUNT", "SUM", "MIN", "MAX", "AVG", "COALESCE", "NULLIF", "CAST", "LOWER", "UPPER", "LENGTH", "ABS"}
 
 
 class SQLValidationError(ValueError):

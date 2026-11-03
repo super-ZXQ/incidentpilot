@@ -44,6 +44,13 @@ async def test_mcp_adapter_offline_tools_work() -> None:
 
     src = await gateway.call("read_source_code", {"path": "app/services/orders.py"})
     assert src.status == "SUCCEEDED"
+    assert src.output["total_lines"] == 4 and src.output["has_more"] is False
+
+    page = await gateway.call("read_source_code",
+                              {"path": "app/services/orders.py", "start_line": 3})
+    assert page.status == "SUCCEEDED"
+    assert page.output["start_line"] == 3
+    assert "N+1" not in page.output["content"]
 
     db = await gateway.call("query_database_readonly", {"query": "SELECT 1"})
     assert db.status == "SUCCEEDED"
@@ -76,6 +83,67 @@ async def test_mcp_server_module_exposes_tools() -> None:
         assert "rows" in result2
     else:
         assert READONLY_TOOLS.issubset(names) or names == READONLY_TOOLS
+
+
+def test_source_reads_page_to_the_injected_line(monkeypatch) -> None:
+    """The context projection caps strings at 4000 chars, so a 10 KB file was cut
+    before the endpoint body. Paging must make the injected loop observable."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1] / "reference" / "orders_api"
+    monkeypatch.setenv("REFERENCE_REPO_PATH", str(repo))
+    module = _load_server_module("ops_readonly_server_paging")
+
+    pages = []
+    start_line = 1
+    while True:
+        window = module.read_source_code(repository="reference/orders_api",
+                                         path="app.py", start_line=start_line)
+        assert "error" not in window
+        assert "truncated" not in window, "the gateway rejects truncated payloads as incomplete"
+        pages.append(window)
+        if not window["has_more"]:
+            break
+        assert window["end_line"] >= window["start_line"]
+        start_line = window["end_line"] + 1
+        assert len(pages) < 20, "paging failed to terminate"
+
+    source = repo.joinpath("app.py").read_text()
+    source_lines = source.splitlines(keepends=True)
+    for page in pages:
+        assert page["total_lines"] == len(source_lines)
+        assert len(page["content"]) <= module.SOURCE_WINDOW_CHARS
+        assert page["content"] == "".join(
+            source_lines[page["start_line"] - 1:page["end_line"]]
+        )
+    for previous, following in zip(pages[:-1], pages[1:], strict=True):
+        assert following["start_line"] == previous["end_line"] + 1
+
+    assert "".join(page["content"] for page in pages) == source
+    assert pages[-1]["end_line"] == pages[-1]["total_lines"]
+
+    injected = [
+        page for page in pages
+        if "for order in orders" in page["content"] and "per_row_delay" in page["content"]
+    ]
+    assert injected, "the injected N+1 loop must be reachable through paging"
+    loop_line = source.splitlines().index("        for order in orders:") + 1
+    assert injected[0]["start_line"] <= loop_line <= injected[0]["end_line"]
+
+
+def test_source_read_beyond_eof_reports_length_instead_of_failing(monkeypatch) -> None:
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1] / "reference" / "orders_api"
+    monkeypatch.setenv("REFERENCE_REPO_PATH", str(repo))
+    module = _load_server_module("ops_readonly_server_eof")
+
+    window = module.read_source_code(path="app.py", start_line=100_000)
+    assert "error" not in window
+    assert window["content"] == ""
+    assert window["has_more"] is False
+    assert window["total_lines"] == len(repo.joinpath("app.py").read_text().splitlines())
+    assert module.read_source_code(path="app.py", start_line=0)["error"]
 
 
 @pytest.mark.asyncio

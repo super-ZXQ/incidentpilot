@@ -38,6 +38,7 @@ class FaultGroundTruth(BaseModel):
     affected_component: str
     root_cause: str
     causal_facts: list[str] = Field(min_length=1)
+    injection_evidence: dict[str, Any] | None = None
 
     def get(self, key: str, default: Any = None) -> Any:
         return getattr(self, key, default)

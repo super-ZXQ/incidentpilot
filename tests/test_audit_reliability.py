@@ -14,6 +14,7 @@ import pytest
 
 from incidentpilot.config import Settings
 from incidentpilot.github.integration import GitHubIntegration
+from incidentpilot.llm.provider import RETRY_ATTEMPTS, LLMMessage, OpenAICompatibleProvider
 from incidentpilot.models.enums import RUN_TRANSITIONS, TERMINAL_RUN_STATUSES, AgentRunStatus
 from incidentpilot.persistence.jobs import (
     claim_next_run,
@@ -241,3 +242,114 @@ async def test_patch_retries_start_from_base_and_preserve_each_test_exit(db_sess
     assert [p["test_ok"] for p in result["patch_attempts"]] == [False, True]
     records = list((await db_session.execute(select(SandboxTestRecord).where(SandboxTestRecord.run_pk == run.id).order_by(SandboxTestRecord.created_at))).scalars())
     assert [(r.status, r.exit_code) for r in records] == [("FAILED", 1), ("PASSED", 0)]
+
+
+class _CompletionResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                "gateway error",
+                request=httpx.Request("POST", "http://llm.test/v1/chat/completions"),
+                response=httpx.Response(self.status_code),
+            )
+
+    def json(self) -> dict:
+        return {
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+
+
+class _FlakyGateway:
+    """An OpenAI-compatible endpoint that answers with the given status codes in order."""
+
+    def __init__(self, statuses: list[int]) -> None:
+        self.statuses = statuses
+        self.attempts = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url: str, *, json=None, headers=None) -> _CompletionResponse:
+        self.attempts += 1
+        return _CompletionResponse(self.statuses.pop(0))
+
+
+def _provider_gateway(monkeypatch, statuses: list[int]) -> tuple:
+    gateway = _FlakyGateway(statuses)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: gateway)
+    waits: list[float] = []
+
+    async def record(delay):
+        waits.append(delay)
+
+    monkeypatch.setattr("incidentpilot.llm.provider.asyncio.sleep", record)
+    provider = OpenAICompatibleProvider(base_url="http://llm.test/v1", api_key="key", model="m")
+    return provider, gateway, waits
+
+
+async def test_provider_retries_a_gateway_5xx(monkeypatch):
+    """A transient 503 must not be promoted to a failed investigation run."""
+    provider, gateway, waits = _provider_gateway(monkeypatch, [503, 200])
+    response = await provider.complete([LLMMessage("user", "hi")])
+    assert response.content == "ok"
+    assert gateway.attempts == 2
+    assert waits == [1.0]
+
+
+async def test_provider_backs_off_then_reports_exhaustion(monkeypatch):
+    provider, gateway, waits = _provider_gateway(monkeypatch, [503, 503, 503])
+    with pytest.raises(httpx.HTTPStatusError):
+        await provider.complete([LLMMessage("user", "hi")])
+    assert gateway.attempts == RETRY_ATTEMPTS
+    assert waits == [1.0, 2.0]
+
+
+async def test_provider_does_not_retry_a_request_it_sent_correctly(monkeypatch):
+    provider, gateway, waits = _provider_gateway(monkeypatch, [400])
+    with pytest.raises(httpx.HTTPStatusError):
+        await provider.complete([LLMMessage("user", "hi")])
+    assert gateway.attempts == 1
+    assert waits == []
+
+
+async def test_structured_repair_tells_the_model_which_field_failed():
+    """A blind re-ask silently replaced two intended observations with other actions.
+
+    deepseek-flash omitted tool_selection.reason twice; the repair prompt only said
+    the output was invalid, so the regenerated decision was a different tool call.
+    """
+    from incidentpilot.llm.provider import LLMResponse
+    from incidentpilot.llm.schemas import NextAction
+
+    provider = OpenAICompatibleProvider(base_url="http://llm.test/v1", api_key="key", model="m")
+    prompts: list[str] = []
+
+    async def scripted(messages, **kwargs):
+        prompts.append(messages[-1].content)
+        if len(prompts) == 1:
+            return LLMResponse(
+                content='{"action":"collect_evidence","reason":"r","tool_selection":'
+                        '{"tool_name":"read_logs","arguments":{"service":"orders-api"}}}',
+                provider="test",
+                model="m",
+            )
+        return LLMResponse(
+            content='{"action":"collect_evidence","reason":"r","tool_selection":'
+                    '{"tool_name":"inspect_git_history","reason":"new source","arguments":{}}}',
+            provider="test",
+            model="m",
+        )
+
+    provider._complete = scripted
+    action = await provider.complete_structured(NextAction, [LLMMessage("user", "ctx")])
+    assert action.tool_selection.tool_name == "inspect_git_history"
+    assert len(prompts) == 2
+    assert "tool_selection.reason" in prompts[1]
+    assert '"tool_name":"read_logs"' in prompts[1]

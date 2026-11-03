@@ -36,10 +36,13 @@ Tool argument contracts (use only these keys and types):
 - read_logs: {"service": string, "window": string}
 - inspect_git_history: {"repository": string, "limit": integer}
 - inspect_git_diff: {"repository": string, "commit_sha": string}
-- read_source_code: {"repository": string, "path": string}
+- read_source_code: {"repository": string, "path": string, "start_line": integer}
 - query_database_readonly: {"query": string containing one read-only SELECT}
 Do not add environment, metrics, metric_names, time_range, or window_minutes fields.
 Do not guess nested source paths. For the reference/orders_api repository, inspect app.py first.
+A source read returns one window: content, start_line, end_line, total_lines, has_more.
+If has_more is true, call read_source_code again with start_line=end_line+1 to keep reading;
+if it is false, you have reached the end of the file.
 """.strip()
 
 

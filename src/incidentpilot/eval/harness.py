@@ -20,6 +20,9 @@ from incidentpilot.models.enums import AgentRunStatus
 from incidentpilot.persistence.session import get_session_factory
 from incidentpilot.services.incidents import IncidentService, RunService
 
+BASELINE_SAMPLES = 3
+FAULTED_SAMPLES = 4
+
 
 @dataclass
 class CaseOutcome:
@@ -34,6 +37,7 @@ class CaseOutcome:
     fault_category_correct: bool = False
     affected_component_correct: bool = False
     evidence_supported: bool = False
+    evidence_hits_injection: bool = False
     tool_selection_score: float = 0.0
     patch_test_pass: bool = False
     unsafe_action: bool = False
@@ -60,6 +64,7 @@ class BenchmarkReport:
     fault_category_accuracy: float = 0.0
     affected_component_accuracy: float = 0.0
     evidence_support_rate: float = 0.0
+    injection_hit_rate: float = 0.0
     tool_selection_accuracy: float = 0.0
     investigation_success_rate: float = 0.0
     remediation_ready_rate: float = 0.0
@@ -207,6 +212,7 @@ class EvaluationHarness:
             fault_category_correct=structured["category_ok"],
             affected_component_correct=structured["component_ok"],
             evidence_supported=structured["evidence_bound"],
+            evidence_hits_injection=structured["injection_hit"],
             tool_selection_score=tool_score,
             patch_test_pass=result.get("test_status") == "PASSED",
             unsafe_action=unsafe,
@@ -216,6 +222,7 @@ class EvaluationHarness:
                 "status": status,
                 "expected_fix": case.expected_fix_behavior,
                 "citation_valid": structured["evidence_bound"],
+                "injection_hit": structured["injection_hit"],
                 "causal_facts_match": structured["causal_facts_match"],
                 "test_scope": result.get("test_scope"),
                 "test_executed": result.get("test_status") in {"PASSED", "FAILED"},
@@ -230,14 +237,23 @@ class EvaluationHarness:
     async def _setup_and_reproduce(self, case: FaultCase) -> None:
         import httpx
 
+        orders_url = f"{self.settings.reference_orders_api_url}/orders"
         async with httpx.AsyncClient(timeout=10) as client:
+            # Latency cases report a P95 shift, so the reproduction has to leave a
+            # distribution behind. A single post-fault sample is one number the Agent
+            # can neither compare nor disprove, and a careful model refuses the case
+            # instead of agreeing with the report.
+            for _ in range(BASELINE_SAMPLES):
+                await client.get(orders_url)
             setup = await client.post(
                 f"{self.settings.reference_orders_api_url}/admin/fault",
                 json={"fault_type": case.fault_type, "params": case.params},
             )
             setup.raise_for_status()
-            reproduced = await client.get(f"{self.settings.reference_orders_api_url}/orders")
-            if reproduced.status_code not in {200, 500, 504}:
+            reproduced = None
+            for _ in range(FAULTED_SAMPLES):
+                reproduced = await client.get(orders_url)
+            if reproduced is None or reproduced.status_code not in {200, 500, 504}:
                 raise RuntimeError(f"fault reproduction failed with {reproduced.status_code}")
 
     async def _reset_fault(self) -> None:
@@ -275,6 +291,7 @@ class EvaluationHarness:
         report.fault_category_accuracy = sum(1 for o in outcomes if o.fault_category_correct) / len(outcomes)
         report.affected_component_accuracy = sum(1 for o in outcomes if o.affected_component_correct) / len(outcomes)
         report.evidence_support_rate = sum(1 for o in outcomes if o.evidence_supported) / len(outcomes)
+        report.injection_hit_rate = sum(1 for o in outcomes if o.evidence_hits_injection) / len(outcomes)
         report.tool_selection_accuracy = sum(o.tool_selection_score for o in outcomes) / len(outcomes)
         report.investigation_success_rate = sum(1 for o in outcomes if o.root_cause_correct) / len(outcomes)
         report.incident_resolution_rate = sum(

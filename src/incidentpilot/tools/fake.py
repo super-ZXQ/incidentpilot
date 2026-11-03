@@ -67,17 +67,28 @@ class DeterministicFakeTools:
         }
 
     async def read_source_code(
-        self, repository: str = "", path: str = "app/services/orders.py", **_: Any
+        self,
+        repository: str = "",
+        path: str = "app/services/orders.py",
+        start_line: int = 1,
+        **_: Any,
     ) -> dict[str, Any]:
+        lines = [
+            "def list_orders(db):\n",
+            "    # N+1: items loaded per order\n",
+            "    orders = db.query(Order).all()\n",
+            "    return [o.with_items() for o in orders]\n",
+        ]
+        first_line = max(1, int(start_line))
+        window = lines[first_line - 1:] if first_line <= len(lines) else []
         return {
             "repository": repository,
             "path": path,
-            "content": (
-                "def list_orders(db):\n"
-                "    # N+1: items loaded per order\n"
-                "    orders = db.query(Order).all()\n"
-                "    return [o.with_items() for o in orders]\n"
-            ),
+            "content": "".join(window),
+            "start_line": first_line,
+            "end_line": first_line + len(window) - 1,
+            "total_lines": len(lines),
+            "has_more": False,
             "fault_hint": self.fault_hint,
         }
 
@@ -156,6 +167,7 @@ def register_fake_readonly_tools(
                 "properties": {
                     "repository": {"type": "string"},
                     "path": {"type": "string"},
+                    "start_line": {"type": "integer", "minimum": 1},
                 },
                 "required": ["path"],
             },

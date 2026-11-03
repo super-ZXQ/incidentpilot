@@ -18,6 +18,9 @@ from mcp.server.fastmcp import FastMCP
 REFERENCE_REPO = Path(os.environ.get("REFERENCE_REPO_PATH", "./reference/orders_api"))
 REFERENCE_LOGS = Path(os.environ.get("REFERENCE_LOGS_PATH", "./reference/orders_api/var/logs"))
 REFERENCE_ORDERS_API_URL = os.environ.get("REFERENCE_ORDERS_API_URL", "http://127.0.0.1:8001")
+# The Agent projects every string to 4000 characters before the model sees it;
+# a window below that cap arrives whole instead of being cut at an arbitrary byte.
+SOURCE_WINDOW_CHARS = 3_200
 
 mcp = FastMCP("ops-readonly")
 
@@ -211,8 +214,13 @@ def inspect_git_diff(repository: str = "", commit_sha: str = "HEAD") -> dict[str
 
 @mcp.tool()
 @safe_tool
-def read_source_code(repository: str = "", path: str = "app.py") -> dict[str, Any]:
-    """Read a source file from the reference repository (read-only)."""
+def read_source_code(repository: str = "", path: str = "app.py", start_line: int = 1) -> dict[str, Any]:
+    """Read a source file from the reference repository (read-only).
+
+    The response is one line-aligned window near SOURCE_WINDOW_CHARS and reports
+    total_lines/end_line/has_more so the caller can continue from end_line + 1
+    instead of guessing where the file was cut off.
+    """
     try:
         repo_path = _resolve_reference_repo(repository)
     except ValueError as exc:
@@ -249,8 +257,43 @@ def read_source_code(repository: str = "", path: str = "app.py") -> dict[str, An
         return {"error": "file not found", "path": str(file_path)}
     if file_path.is_symlink() or not file_path.is_file() or file_path.stat().st_size > 50_000:
         return {"error": "source must be a bounded regular file"}
-    content = file_path.read_text(encoding="utf-8", errors="strict")
-    return {"path": str(file_path), "content": content}
+    try:
+        first_line = int(start_line)
+    except (TypeError, ValueError):
+        return {"error": "start_line must be a positive integer", "path": path}
+    if first_line < 1:
+        return {"error": "start_line must be a positive integer", "path": path}
+    all_lines = file_path.read_text(encoding="utf-8", errors="strict").splitlines(keepends=True)
+    total_lines = len(all_lines)
+    if first_line > total_lines:
+        return {
+            "path": str(file_path),
+            "content": "",
+            "start_line": first_line,
+            "end_line": total_lines,
+            "total_lines": total_lines,
+            "has_more": False,
+        }
+    index = first_line - 1
+    window: list[str] = []
+    size = 0
+    while index < total_lines:
+        line = all_lines[index]
+        if window and size + len(line) > SOURCE_WINDOW_CHARS:
+            break
+        window.append(line)
+        size += len(line)
+        index += 1
+    return {
+        "path": str(file_path),
+        "content": "".join(window),
+        "start_line": first_line,
+        "end_line": first_line + len(window) - 1,
+        "total_lines": total_lines,
+        # `truncated` is reserved for payloads the gateway must reject as incomplete;
+        # a finished window that is followed by more lines is a complete observation.
+        "has_more": index < total_lines,
+    }
 
 
 @mcp.tool()

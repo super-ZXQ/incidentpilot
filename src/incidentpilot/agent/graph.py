@@ -427,7 +427,10 @@ async def _run_with_langgraph(
                 action = NextAction(action="form_hypothesis") if index >= len(fixed) else NextAction(action="collect_evidence", tool_selection=ToolSelection(tool_name=fixed[index][0], arguments=fixed[index][1], reason="fixed baseline observation"))
             else:
                 action = await decision_model.next_action(decision_context, evidence)
-            if action.action == "form_hypothesis":
+            # "declare_root_cause"/"verify_hypothesis" are the model saying it has
+            # enough, not a routing command: the graph still runs hypothesis,
+            # verification and conclusion gates before anything is accepted.
+            if action.action in {"form_hypothesis", "verify_hypothesis", "declare_root_cause"}:
                 break
             if action.action in {"insufficient_evidence", "needs_human"}:
                 s["workflow_state"] = (
@@ -443,9 +446,13 @@ async def _run_with_langgraph(
                 s["result"] = {**(s.get("result") or {}), "stop_reason": action.reason}
                 break
             selection = action.tool_selection
-            if action.action != "collect_evidence" or selection is None:
+            if selection is None:
                 s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
                 s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value
+                s["result"] = {
+                    **(s.get("result") or {}),
+                    "stop_reason": "model asked to collect evidence with no tool selection",
+                }
                 break
             if selection.tool_name not in READONLY_TOOLS:
                 call = await _call_tool(gateway, s, selection.tool_name, selection.arguments)
@@ -550,8 +557,11 @@ async def _run_with_langgraph(
         source = await _call_tool(gateway, s, selection.tool_name, selection.arguments)
         s["tool_calls"] = list(s.get("tool_calls") or []) + [source]
         extra_evidence = list(s.get("evidence") or [])
+        # The verification observation has to add information, not merely come from a
+        # tool nobody has touched yet: a model that already read app.py during the sweep
+        # was left with no legal way to verify, and a correct hypothesis died as
+        # INSUFFICIENT_EVIDENCE. Repeating a payload byte-for-byte is what proves nothing.
         if (source["status"] != "SUCCEEDED"
-                or selection.tool_name in {e["source"] for e in extra_evidence}
                 or content_hash(source["output"]) in {e.get("hash") for e in extra_evidence}):
             s["status"] = AgentRunStatus.INSUFFICIENT_EVIDENCE.value
             s["workflow_state"] = WorkflowState.INSUFFICIENT_EVIDENCE.value

@@ -5,15 +5,37 @@ Agent nodes must not create provider clients directly.
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel
 
+# Bounded recovery for transient upstream failures; see OpenAICompatibleProvider._complete.
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 1.0
+
 
 class StructuredOutputError(RuntimeError):
     """A model exhausted the bounded structured-output repair attempts."""
+
+
+def _repair_message(content: str, error: Exception) -> LLMMessage:
+    """Tell the model what failed; a blind re-ask silently changed the decision.
+
+    Measured against deepseek-flash: two decisions omitted tool_selection.reason,
+    the blind "previous output was invalid" retry produced a different action, and
+    the intended observation was never collected.
+    """
+    return LLMMessage(
+        role="user",
+        content=(
+            "The previous output was invalid. Return only schema-valid JSON.\n"
+            f"Validation error: {str(error)[:600]}\n"
+            f"Previous output: {content[:2000]}"
+        ),
+    )
 
 
 @dataclass
@@ -82,13 +104,7 @@ class LLMProvider(ABC):
                 return schema.model_validate_json(content)
             except (ValueError, TypeError) as exc:
                 last_error = exc
-                repair_messages = [
-                    *messages,
-                    LLMMessage(
-                        role="user",
-                        content="The previous output was invalid. Return only schema-valid JSON.",
-                    ),
-                ]
+                repair_messages = [*messages, _repair_message(content, exc)]
         raise StructuredOutputError("structured output invalid after 3 attempts") from last_error
 
 
@@ -213,13 +229,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 return schema.model_validate_json(content)
             except (ValueError, TypeError) as exc:
                 last_error = exc
-                repair_messages = [
-                    *messages,
-                    LLMMessage(
-                        role="user",
-                        content="The previous output was invalid. Return only schema-valid JSON.",
-                    ),
-                ]
+                repair_messages = [*messages, _repair_message(content, exc)]
         raise StructuredOutputError("structured output invalid after 3 attempts") from last_error
 
     async def _complete(
@@ -254,14 +264,26 @@ class OpenAICompatibleProvider(LLMProvider):
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(
-                f"{self._base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        # A gateway 5xx that propagates kills the whole investigation: measured against
+        # a live provider, two of five runs died mid-sweep on "503 Service Temporarily
+        # Unavailable". Chat completion has no side effects, so retry it a bounded
+        # number of times instead of turning an upstream blip into a failed run.
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.post(
+                        f"{self._base_url}/chat/completions",
+                        json=payload,
+                        headers=headers,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                break
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                response = getattr(exc, "response", None)
+                if attempt == RETRY_ATTEMPTS or (response is not None and response.status_code < 500):
+                    raise
+                await asyncio.sleep(RETRY_BACKOFF_SECONDS * attempt)
 
         content = ""
         choices = data.get("choices") or []

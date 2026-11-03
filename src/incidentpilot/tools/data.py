@@ -36,7 +36,23 @@ def untrusted_context(value: Any, limit: int = 24_000) -> str:
             return [bounded(v, depth + 1) for v in item[-20:]]
         return item
 
-    data = json.dumps(bounded(redact(value)), ensure_ascii=True, default=str)
+    bounded_value = bounded(redact(value))
+    data = json.dumps(bounded_value, ensure_ascii=True, default=str)
+    omitted = 0
+    if isinstance(bounded_value, dict):
+        while len(data) > limit:
+            # Drop the oldest entries of the longest list. Replacing the whole
+            # envelope with an excerpt of its own JSON made every observation
+            # unreadable once an investigation collected enough evidence; the
+            # newest observations are the ones a decision needs.
+            lists = [(len(v), key) for key, v in bounded_value.items() if isinstance(v, list) and v]
+            if not lists:
+                break
+            _, key = max(lists)
+            bounded_value[key] = bounded_value[key][1:]
+            omitted += 1
+            bounded_value["omitted_items"] = omitted
+            data = json.dumps(bounded_value, ensure_ascii=True, default=str)
     if len(data) > limit:
         # Retain valid JSON and make truncation explicit.
         data = json.dumps({"truncated": True, "data_excerpt": data[:limit // 2]})
