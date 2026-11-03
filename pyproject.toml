@@ -30,6 +30,7 @@ dependencies = [
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
     "httpx>=0.28.0",
 ]
@@ -54,6 +55,19 @@ markers = [
     "github: requires real GitHub token",
     "blocked_by_external_env: needs real credentials or external env",
 ]
+
+# Coverage is scoped to the shipped package. Tests, the reference service, the MCP
+# server and the sandbox image are separate programs: subprocesses they start are not
+# traced, so their absence here is a boundary of the measurement, not of the suite.
+[tool.coverage.run]
+source = ["incidentpilot"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# Measured 80% on 2026-11-03 (236 passed, 3 skipped). The floor allows one point of
+# drift for refactors but fails a collapse instead of reporting it silently.
+fail_under = 79
 
 [tool.ruff]
 line-length = 100

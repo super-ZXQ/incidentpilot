@@ -236,11 +236,12 @@ Experiments that were actually executed are listed in `docs/RESILIENCE_REPORT.md
 ```bash
 uv run ruff check .
 uv run pytest -q
+uv run pytest -q --cov=incidentpilot   # branch coverage; floor is enforced from pyproject.toml
 uv run pytest -q tests/test_mcp_live.py -s
 uv run pytest -q -m docker -rs
 ```
 
-CI runs Python 3.12, `uv`, Ruff, pytest, and PostgreSQL without LLM or GitHub credentials. Real LLM/GitHub checks are optional and reported separately.
+CI runs Python 3.12, `uv`, Ruff, pytest with coverage, and PostgreSQL without LLM or GitHub credentials. Real LLM/GitHub checks are optional and reported separately. Coverage measures the `incidentpilot` package in the pytest process; programs the suite spawns (worker, MCP stdio server, sandbox container) are outside that number.
 
 `load/locustfile.py` is synthetic load for concurrent create/poll/approve and queue backpressure. `docker-compose.chaos.yml` provides opt-in Toxiproxy (`ghcr.io/shopify/toxiproxy:2.9.0`) and two-worker experiments. On Windows use `docker-compose` if the `docker compose` plugin is missing. These are **not** real business traffic; executed and unexecuted results are distinguished in `docs/RESILIENCE_REPORT.md` and `load/results/resilience-results.json`.
 

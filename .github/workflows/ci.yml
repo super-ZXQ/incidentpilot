@@ -85,8 +85,8 @@ jobs:
 
           create_app(os.environ["REFERENCE_SEED_URL"])
           PY
-      - name: Pytest
-        run: uv run pytest -q
+      - name: Pytest with coverage
+        run: uv run pytest -q --cov=incidentpilot
         env:
           OTEL_CONSOLE_EXPORTER: "false"
           LLM_ENABLED: "false"
