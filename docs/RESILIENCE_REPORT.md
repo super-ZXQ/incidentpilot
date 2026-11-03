@@ -4,7 +4,8 @@ This report separates verified automated behavior from experiments that have not
 
 Every measurement is attributed to the host and date it was taken, because they are not the
 same machine: the 2026-09-18 rows ran on a Windows host with standalone `docker-compose`, and
-the 2026-11-03 rows ran on macOS with the Compose plugin plus GitHub-hosted `ubuntu-latest` CI.
+the 2026-11-03 rows ran on macOS with the Compose plugin plus GitHub-hosted `ubuntu-latest`
+and `windows-latest` CI.
 
 ## Verified by automated tests
 
@@ -21,19 +22,23 @@ the 2026-11-03 rows ran on macOS with the Compose plugin plus GitHub-hosted `ubu
 - An approval decision is executed by a leased worker after the run is re-queued, not inside the HTTP request, so a disconnected client cannot cancel the resumed graph or the GitHub call it makes.
 - Graph resume is bounded by a timeout, and a heartbeat survives a transient database error instead of abandoning a live lease (`tests/test_approval_handoff.py` 3 tests, `tests/test_worker_resilience.py` 9 tests).
 - Queue and lease gauges are published only by the process that owns them, and with no port configured the worker binds nothing at all (`tests/test_metrics_export.py`, 2 tests).
-- The reference Git fixture produces a repository whose HEAD tree equals the deployed source, and refuses to write into a destination owned by another uid rather than destroying a working repository first (`tests/test_reference_git_fixture.py`, 3 tests).
+- The reference Git fixture produces a repository whose HEAD tree equals the deployed source, refuses to write into a destination owned by another uid rather than destroying a working repository first, and clears git's read-only loose objects on rebuild (`tests/test_reference_git_fixture.py`, 4 tests).
 - Outside `development` the schema is Alembic-only: the empty-database gate asserts zero tables, so an auto-`create_all` path fails the suite instead of silently diverging from migrations.
 - `read_source_code` returns one line-aligned window near 3,200 characters with `start_line`/`end_line`/`total_lines`/`has_more`, so a file larger than the Agent's 4,000-character projection cap can still be read to its end; the paged test walks `reference/orders_api/app.py` and asserts the window containing the injected loop is reachable (`tests/test_phase4_mcp.py`). `has_more`, not `truncated`, is the field name because the gateway rejects truncated payloads as incomplete.
 - An over-budget context envelope drops the oldest evidence entries and records `omitted_items` instead of replacing every observation with an excerpt of its own JSON (`tests/test_audit_tools.py`).
 - Structured-output repair tells the model which field failed and shows the rejected output; measured against deepseek-flash, a blind re-ask silently replaced two intended observations with different tool calls (`tests/test_audit_reliability.py`).
 - The evaluator's `injection_hit` assertion requires at least one conclusion citation to contain the fault case's `injection_evidence` markers in the injected file; valid citations to agreeing telemetry alone do not satisfy it (`tests/test_audit_tools.py`).
+- Branch coverage of the `incidentpilot` package is measured with a 79% floor; a run below the floor exits non-zero (`Required test coverage of 79.0% not reached`), and the full Linux suite reports 80.08% in CI.
+- CI runs the service-free suite on `windows-latest`, which executes the Windows-only Selector event loop, `taskkill` process-tree cancellation, and local sandbox paths that the Linux job cannot reach.
 
-## Experiment status — 2026-11-03 (macOS host, GitHub-hosted ubuntu-latest)
+## Experiment status — 2026-11-03 (macOS host, GitHub-hosted ubuntu-latest and windows-latest)
 
 | Experiment | Status | Measurements |
 |---|---|---|
-| Full test suite in CI | Executed | `219 passed, 3 skipped, 55 warnings in 162.25s` (run 41574057091, commit `f58ff51`). The 3 skips are environmental: 2 require `os.name == "nt"` (Windows `tasklist`), 1 requires `LLM_API_KEY`. |
-| Full test suite on macOS | Executed | `219 passed, 3 skipped in 118.15s` after this report was refreshed; `219 passed, 3 skipped in 119.63s` with the reference role URLs configured earlier the same day, and `218 passed, 4 skipped in 122.00s` without them. |
+| Full test suite in CI | Executed | `237 passed, 3 skipped, 55 warnings in 183.49s`, branch coverage 80.08% (run 41659502046, commit `4dc4ab9`). The 3 skips are environmental: 2 require `os.name == "nt"` (Windows `tasklist`), 1 requires `LLM_API_KEY`. The previous run on `f58ff51` reported `219 passed, 3 skipped in 162.25s` before the paging, coverage and Windows batches. |
+| Windows CI job (`windows-latest`, no external services) | Executed | `225 passed, 15 skipped in 238.16s` (same run and commit). The 15 skips are environmental: no PostgreSQL service, no sandbox image, no LLM key on the runner. Its first run (41658112044) failed with 2 genuine Windows defects — `shutil.rmtree` refused to delete git's read-only loose objects (`WinError 5`), and the repository-scoping test used `/etc`, which is rooted but not absolute on Windows — both fixed in `4dc4ab9`, after which the job passed. |
+| Coverage gate | Executed | Linux CI reports `Required test coverage of 79.0% reached. Total coverage: 80.08%`. The gate can fail: a local subset run exits 1 with `Required test coverage of 79.0% not reached. Total coverage: 18.68%`. |
+| Full test suite on macOS | Executed | `237 passed, 3 skipped in 124.86s` at 80.15% with the reference role URLs; earlier the same day `219 passed, 3 skipped in 118.15s`, `219 passed, 3 skipped in 119.63s`, and `218 passed, 4 skipped in 122.00s` without the roles. |
 | SQL least-privilege role check in CI | Executed | Same commit, before/after the fixture: run 41572899582 `218 passed, 4 skipped` → run 41574057091 `219 passed, 3 skipped`. The check can fail: granting `INSERT` to `reference_readonly` produces `database role has write privileges`, and denying it login produces a connection refusal — both verified on `postgres:16-alpine`. |
 | PostgreSQL Alembic upgrade | Executed | CI step against a fresh `postgres:16-alpine` service, head `0005_security_bindings`. |
 | Containerized remediation loop (live Compose stack) | Executed | Measured before 03:08:06Z (commit `39d2053`). Queued run → live MCP metrics and logs → `inspect_git_history` on the fixture repository → patch → nested sandbox container pytest `PASSED`, exit 0 → `WAITING_APPROVAL` → APPROVE → re-queue → `CREATE_PULL_REQUEST` → `RESOLVED` with the mock PR. `base_commit_sha` was a real 40-hex HEAD, not `UNVERSIONED`. **No fault was injected, so this proves the pipeline runs, not that the agent diagnoses correctly.** |
@@ -77,6 +82,10 @@ Run synthetic load with `uv run --with locust locust -f load/locustfile.py --hos
   that the model diagnoses every case. FakeModel evidence cannot speak to whether a real
   model would be semantically misled by injected content.
 - Chaos numbers are local synthetic measurements, not enterprise SLOs.
+- Coverage counts only the `incidentpilot` package inside the pytest process; the worker,
+  MCP stdio server and sandbox container the suite spawns are not traced, and the Windows
+  job runs without PostgreSQL, Docker or an LLM, so it covers Windows subprocess and
+  event-loop branches rather than database behavior on Windows.
 - The containerized remediation loop ran **without an injected fault**: it demonstrates that
   evidence collection, patching, testing, approval and the PR step all execute, not that the
   agent identifies a real cause correctly.
