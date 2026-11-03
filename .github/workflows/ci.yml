@@ -31,6 +31,14 @@ jobs:
         run: uv sync --extra dev
       - name: Ruff
         run: uv run ruff check .
+      # A key misplaced inside `environment:` is a YAML error that only shows up on the
+      # laptop that runs `docker compose up` — and it fails quietly for the metrics port,
+      # because the worker then never gets its scrape endpoint.
+      - name: Validate Compose interpolation
+        run: docker compose config --quiet
+        env:
+          API_TOKENS: '{}'
+          IP_WORKSPACES: /tmp/ip-workspaces
       - name: Alembic upgrade
         run: uv run alembic upgrade head
         env:

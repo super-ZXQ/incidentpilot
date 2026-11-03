@@ -140,10 +140,16 @@ services:
       REFERENCE_DB_URL: postgresql://reference_readonly:reference_readonly@reference-postgres:5432/orders
       TMPDIR: ${IP_WORKSPACES:?set IP_WORKSPACES to an absolute host directory for sandbox workspaces}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      # Real queue/lease values live only in this process, so Prometheus scrapes the
+      # worker directly. `expose` keeps the endpoint on the compose network instead of
+      # publishing an unauthenticated port on the host.
+      WORKER_METRICS_PORT: "9102"
       JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-60}
       JOB_HEARTBEAT_SECONDS: ${JOB_HEARTBEAT_SECONDS:-15}
       MAX_JOB_ATTEMPTS: ${MAX_JOB_ATTEMPTS:-3}
       RUN_TIMEOUT_SECONDS: ${RUN_TIMEOUT_SECONDS:-900}
+    expose:
+      - "9102"
     volumes:
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - ${IP_WORKSPACES:?set IP_WORKSPACES}:${IP_WORKSPACES:?set IP_WORKSPACES}

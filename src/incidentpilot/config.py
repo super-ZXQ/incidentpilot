@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     job_heartbeat_seconds: int = Field(default=15, ge=1, le=600)
     max_job_attempts: int = Field(default=3, ge=1, le=20)
     max_queued_runs: int = Field(default=100, ge=1, le=10000)
+    # 0 keeps the worker from opening a listener at all; the gauges below are only
+    # ever set in this process, so a scrape target has to come here for real values.
+    worker_metrics_port: int = Field(default=0, ge=0, le=65535)
+    worker_metrics_address: str = Field(default="0.0.0.0")
 
     # Reference environment
     reference_orders_api_url: str = Field(default="http://127.0.0.1:8001")

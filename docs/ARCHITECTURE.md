@@ -495,6 +495,14 @@ Incident
 
 二者不可混淆。
 
+#### Prometheus 指标的进程边界
+
+`incidentpilot_queue_depth`、`incidentpilot_active_runs`、lease/retry 计数器只有在轮询
+队列的 worker 进程里才会被赋值；API 进程加载同一份 registry 时这些值恒为 `0`，看起来健康
+但没有含义。因此 exporter 属于 worker：`WORKER_METRICS_PORT`（默认 `0`，不监听）在该进程
+暴露 registry，`infra/prometheus.yml` 直接抓取 `incidentpilot-worker:9102`，该端口只在
+compose 内部网络 `expose`，不发布到宿主机。这个 endpoint 没有认证，不能作为对外指标接口。
+
 ### K. Evaluation Harness
 
 Evaluation 是独立模块，不嵌进 Agent Prompt。

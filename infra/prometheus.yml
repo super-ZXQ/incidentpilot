@@ -2,6 +2,14 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
+  # The durable worker owns the queue gauges and lease counters; the API's /metrics
+  # needs a bearer token and its copies of those gauges are permanently zero.
+  - job_name: incidentpilot-worker
+    static_configs:
+      - targets: ["incidentpilot-worker:9102"]
+        labels:
+          service: incidentpilot-worker
+
   - job_name: orders-api
     static_configs:
       - targets: ["reference-orders-api:8001"]

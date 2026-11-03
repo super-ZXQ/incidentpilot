@@ -153,10 +153,22 @@ the worker holds root-equivalent control of the daemon, which is acceptable for 
 deployment and is why every published port is loopback-only. A restricted socket proxy
 is the alternative if this stack ever leaves a laptop.
 
+Queue metrics are scraped from the worker, not the API. `incidentpilot_queue_depth`,
+`incidentpilot_active_runs` and the lease counters are set only by the process that
+polls the queue, so the API's `GET /metrics` reports them as permanently zero — a value
+that looks healthy and means nothing. `WORKER_METRICS_PORT` (default `0`, bind nothing)
+opens an unauthenticated registry endpoint in the worker, Compose sets it to `9102` and
+`expose`s it on the internal network only, and `infra/prometheus.yml` scrapes
+`incidentpilot-worker:9102`. Never publish that port on a host or reach it through an
+ingress that isn't already trusted: it has no auth.
+
 What the containerized stack was actually exercised with, on 2026-11-03: Alembic to
 `0005_security_bindings`, `/health` 200, the worker claiming a queued run and reading
-live metrics and logs over MCP, and one nested sandbox container running pytest with the
-manager's flags. It did **not** complete a patch/test/approval loop: `inspect_git_history`
+live metrics and logs over MCP, one nested sandbox container running pytest with the
+manager's flags, and the worker exporter in Prometheus — three queued runs were reported
+as `incidentpilot_queue_depth 3` / `incidentpilot_active_runs 2` on the worker target
+while the API process reported `0` for the same gauges. It did **not** complete a
+patch/test/approval loop: `inspect_git_history`
 and `inspect_git_diff` need `REFERENCE_REPO_PATH` to be a real Git repository, the image
 carries no `.git`, and a bind-mounted source directory alone is not one. Run the
 remediation loop from the host quick start above until a Git fixture is wired up.
@@ -196,7 +208,7 @@ reach that mirror. Change `[[tool.uv.index]]` and re-run `uv lock` to move elsew
 - `GET /v1/runs/{run_id}/tests` — test logs and execution mode
 - `GET /v1/runs/{run_id}/approval` — authenticated approval record and binding
 - `GET /v1/runtime` — configured model/GitHub/sandbox mode and caller role
-- `GET /metrics` — protected Prometheus worker/tool metrics
+- `GET /metrics` — protected Prometheus metrics; queue gauges here are always `0` because this process does not poll the queue (see the worker exporter above)
 - `GET /health` — public liveness
 - `GET /demo` — public static shell; all investigation data requires authentication
 

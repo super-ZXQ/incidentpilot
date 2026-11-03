@@ -26,6 +26,7 @@ from incidentpilot.observability.metrics import (
     RUN_RECOVERIES,
     RUN_RETRIES,
     RUNS,
+    start_metrics_exporter,
 )
 from incidentpilot.persistence.jobs import (
     ClaimedRun,
@@ -237,12 +238,19 @@ async def _main() -> None:
     if not settings.database_url.startswith("postgresql"):
         raise RuntimeError("durable worker requires PostgreSQL")
     await init_schema(settings)
+    exporter = start_metrics_exporter(settings)
+    if exporter is not None:
+        logger.info("worker metrics on %s:%s", *exporter[0].server_address[:2])
     worker = DurableWorker(settings)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         with suppress(NotImplementedError):
             loop.add_signal_handler(sig, worker.request_stop)
-    await worker.run()
+    try:
+        await worker.run()
+    finally:
+        if exporter is not None:
+            exporter[0].shutdown()
 
 
 def main() -> None:
