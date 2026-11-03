@@ -54,6 +54,32 @@ jobs:
           -v ON_ERROR_STOP=1
           -c "CREATE DATABASE incidentpilot_audit OWNER incidentpilot"
           -c "CREATE DATABASE incidentpilot_empty OWNER incidentpilot"
+      # query_database_readonly refuses any account that is not a dedicated
+      # least-privilege role, so without this reference database the role test skips and
+      # the guard's privilege checks never run. Tables are created *after* the grants so
+      # the ALTER DEFAULT PRIVILEGES path production relies on is the one exercised.
+      - name: Create the reference orders database
+        run: >-
+          PGPASSWORD=incidentpilot psql -h 127.0.0.1 -U incidentpilot -d postgres
+          -v ON_ERROR_STOP=1
+          -c "CREATE ROLE reference SUPERUSER LOGIN PASSWORD 'reference'"
+          -c "CREATE DATABASE orders OWNER reference"
+      - name: Grant the readonly audit role and seed the reference schema
+        env:
+          REFERENCE_SEED_URL: postgresql+psycopg://reference:reference@127.0.0.1:5432/orders
+        run: |-
+          set -euo pipefail
+          PGPASSWORD=reference psql -h 127.0.0.1 -U reference -d orders \
+            -v ON_ERROR_STOP=1 -f infra/reference-db-init.sql
+          uv run python - <<'PY'
+          import os
+          import sys
+
+          sys.path.insert(0, "reference/orders_api")
+          from app import create_app
+
+          create_app(os.environ["REFERENCE_SEED_URL"])
+          PY
       - name: Pytest
         run: uv run pytest -q
         env:
@@ -65,3 +91,5 @@ jobs:
           AUDIT_POSTGRES_URL: postgresql+psycopg://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_audit
           POSTGRES_TEST_URL: postgresql://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_app
           POSTGRES_EMPTY_URL: postgresql://incidentpilot:incidentpilot@127.0.0.1:5432/incidentpilot_empty
+          AUDIT_REFERENCE_DB_URL: postgresql://reference_readonly:reference_readonly@127.0.0.1:5432/orders
+          AUDIT_REFERENCE_ADMIN_URL: postgresql://reference:reference@127.0.0.1:5432/orders
