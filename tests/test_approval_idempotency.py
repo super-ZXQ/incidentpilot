@@ -43,7 +43,11 @@ async def test_double_approve_single_pr(client, monkeypatch) -> None:
         ),
     )
     assert sorted([a1.status_code, a2.status_code]) == [200, 409]
-    run2 = (await client.get(f"/v1/runs/{data['run_id']}")).json()
+    for _ in range(100):
+        run2 = (await client.get(f"/v1/runs/{data['run_id']}")).json()
+        if run2["status"] not in {"PENDING", "RUNNING", "WAITING_APPROVAL"}:
+            break
+        await asyncio.sleep(0.05)
     assert run2["status"] == "RESOLVED"
     run3 = (await client.get(f"/v1/runs/{data['run_id']}")).json()
     assert run3["status"] == "RESOLVED"

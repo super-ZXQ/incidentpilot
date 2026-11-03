@@ -95,3 +95,90 @@ async def test_mcp_readonly_sql_rejects_writes() -> None:
     assert bad.get("error")
     ok = module.query_database_readonly("SELECT 1 as x")
     assert "rows" in ok
+
+
+def _load_server_module(name: str):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    server_path = Path(__file__).resolve().parents[1] / "ops_mcp" / "ops_readonly" / "server.py"
+    spec = importlib.util.spec_from_file_location(name, server_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.asyncio
+async def test_repository_names_the_configured_repo_not_the_worker_cwd(
+    monkeypatch, tmp_path
+) -> None:
+    """The reference repository is configured once; `repository` is a label.
+
+    The worker runs from the image's /app, the MCP server inherits that CWD, and the
+    incident says `reference/orders_api`. Resolving the label against the CWD made the
+    same incident work from a checkout and fail in a container.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is required to build the repository fixture")
+    repo = tmp_path / "reference" / "orders_api"
+    repo.mkdir(parents=True)
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    for args in (
+        ("init", "-q", "-b", "main"),
+        ("add", "-A"),
+        ("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "baseline"),
+    ):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    monkeypatch.setenv("REFERENCE_REPO_PATH", str(repo))
+    module = _load_server_module("ops_readonly_server_cwd")
+    configured = repo.resolve()
+
+    assert module._resolve_reference_repo("") == configured
+    assert module._resolve_reference_repo("reference/orders_api") == configured
+    assert module._resolve_reference_repo(str(configured)) == configured
+    # A relative string never becomes a path the caller controls.
+    assert module._resolve_reference_repo("../../etc") == configured
+    with pytest.raises(ValueError, match="outside the configured reference repository"):
+        module._resolve_reference_repo("/etc")
+
+    history = module.inspect_git_history("reference/orders_api")
+    assert "error" not in history
+    assert [c["message"] for c in history["commits"]] == ["baseline"]
+
+
+@pytest.mark.asyncio
+async def test_failed_mcp_payload_keeps_the_server_reason() -> None:
+    """The reason survives, so a stored ToolCall is still diagnosable."""
+    import json
+    from types import SimpleNamespace
+
+    from incidentpilot.tools.mcp_adapter import MCPReadonlyAdapter
+
+    class _Session:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        async def call_tool(self, _name, _arguments):
+            return SimpleNamespace(isError=False, content=[SimpleNamespace(text=self._text)])
+
+    reason = "fatal: not a git repository (or any parent up to mount point /reference)"
+    adapter = MCPReadonlyAdapter(live=True)
+    adapter._session = _Session(json.dumps({"repository": "/reference/orders_api",
+                                            "commits": [], "error": reason}))
+    with pytest.raises(ValueError, match="not a git repository"):
+        await adapter.call_tool("inspect_git_history", {"repository": "reference/orders_api"})
+
+    adapter._session = _Session(json.dumps({}))
+    with pytest.raises(ValueError, match="empty payload"):
+        await adapter.call_tool("read_logs", {})
+
+    adapter._session = _Session(json.dumps([1, 2]))
+    with pytest.raises(ValueError, match="non-object payload"):
+        await adapter.call_tool("read_logs", {})

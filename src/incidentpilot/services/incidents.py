@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import update
@@ -137,8 +137,6 @@ class ApprovalService:
         *,
         actor: str = "human",
         reason: str = "",
-        lease_seconds: int = 60,
-        owner_id: str = "approval-api",
         patch_artifact_id: str | None = None,
         patch_hash: str | None = None,
     ):
@@ -151,10 +149,13 @@ class ApprovalService:
         except ValueError as exc:
             await self.session.rollback()
             raise ApprovalConflict(str(exc)) from exc
+        # Approving only records an intent. The resumed graph, including the
+        # irreversible GitHub call, runs under a worker lease so that cancelling
+        # this request cannot strand a run that is already RUNNING with a dead lease.
         target = (
             AgentRunStatus.NEEDS_HUMAN_INTERVENTION
             if decision == ApprovalDecision.REJECT
-            else AgentRunStatus.RUNNING
+            else AgentRunStatus.PENDING
         )
         workflow_state = (
             WorkflowState.NEEDS_HUMAN_INTERVENTION.value
@@ -169,15 +170,11 @@ class ApprovalService:
             )
             .values(
                 status=target.value,
-                attempt_count=AgentRun.attempt_count + 1,
                 workflow_state=workflow_state,
-                worker_id=owner_id if decision == ApprovalDecision.APPROVE else None,
-                last_heartbeat_at=(repo.utcnow() if decision == ApprovalDecision.APPROVE else None),
-                lease_expires_at=(
-                    repo.utcnow() + timedelta(seconds=lease_seconds)
-                    if decision == ApprovalDecision.APPROVE
-                    else None
-                ),
+                worker_id=None,
+                last_heartbeat_at=None,
+                lease_expires_at=None,
+                next_attempt_at=(None if decision == ApprovalDecision.REJECT else repo.utcnow()),
             )
         )
         if not claimed.rowcount:

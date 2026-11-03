@@ -189,13 +189,23 @@ def test_real_git_diff_changes_match_declared_paths(tmp_path, operation):
 
 
 async def test_missing_approval_checkpoint_stops_instead_of_retrying(db_session):
-    from incidentpilot.persistence.jobs import ClaimedRun
+    from datetime import timedelta
+
+    from incidentpilot.persistence.jobs import claim_next_run, utcnow
     from incidentpilot.services.incidents import RunService
     from incidentpilot.worker import DurableWorker
 
     run, _ = await make_artifact(db_session)
-    _, run = await ApprovalService(db_session).decide(run, ApprovalDecision.APPROVE, actor="test-admin", owner_id="missing-checkpoint-test")
-    claim = ClaimedRun(run.incident_pk, run.run_id, run.worker_id, run.attempt_count, True)
+    # Approving only re-queues; a leased worker performs the resume.
+    await ApprovalService(db_session).decide(run, ApprovalDecision.APPROVE, actor="test-admin")
+    claim = await claim_next_run(
+        db_session,
+        worker_id="worker-a",
+        lease_seconds=60,
+        max_attempts=3,
+        now=utcnow() + timedelta(seconds=1),
+    )
+    assert claim is not None and claim.run_id == run.run_id
     await DurableWorker(Settings(database_url="sqlite+aiosqlite:///test", tool_backend="fake"), worker_id=claim.worker_id)._execute_claim(claim)
     current = await RunService(db_session).get(run.run_id)
     await db_session.refresh(current)

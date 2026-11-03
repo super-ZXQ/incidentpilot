@@ -124,7 +124,10 @@ async def test_database_heartbeat_error_cancels_work_before_retry(audit_database
         pytest.fail("execution survived heartbeat connection failure")
     monkeypatch.setattr(worker, "_resume_or_execute", execute)
     monkeypatch.setattr("incidentpilot.worker.renew_lease", AsyncMock(side_effect=ConnectionError("injected DB disconnect")))
-    await asyncio.wait_for(worker._execute_claim(claim), timeout=10)
+    # Renewal errors are tolerated only until the lease is about to expire
+    # (job_lease_seconds - job_heartbeat_seconds = 9s here); the worker then cancels
+    # the in-flight subprocess and requeues while it still owns the row.
+    await asyncio.wait_for(worker._execute_claim(claim), timeout=30)
     assert marker.exists() and not process_alive(int(marker.read_text()))
     async with get_session_factory()() as session:
         current = await RunService(session).get(run.run_id)
@@ -187,6 +190,8 @@ def test_sql_executes_only_with_dedicated_readonly_role(monkeypatch):
     monkeypatch.setenv("REFERENCE_DB_URL", readonly)
     accepted = query_database_readonly("SELECT id FROM orders")
     assert not accepted.get("error"), accepted
-    assert accepted["rows"] == [{"id": 1}]
+    # orders-api seeds this table and the fault injectors add rows to it, so assert the
+    # shape of the authorised read instead of a row count that depends on fixture state.
+    assert accepted["rows"] and all(list(row) == ["id"] for row in accepted["rows"])
     for query in ("SELECT name FROM customers", "SELECT * FROM pg_catalog.pg_authid", "DELETE FROM orders"):
         assert query_database_readonly(query).get("error")

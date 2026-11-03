@@ -72,10 +72,14 @@ V1 **不设计 Multi-Agent**。
 - 查询 Evidence
 - 查询 Tool Calls / PatchArtifact
 - 接收 Human Approval / Reject
-- 持久化审批决定并 resume workflow
+- 持久化审批决定；APPROVE 只把 Run 重新入队，resume 由持有 lease 的 Worker 执行
 - 返回最终调查结果
 
 FastAPI **不负责** Agent 推理逻辑，也**不直接调用** GitHub Integration。
+
+部署为三个进程/容器：`incidentpilot-migrate`（Alembic 一次性任务）→ `incidentpilot-app`
+（HTTP，`EMBEDDED_WORKER_ENABLED=false`）与 `incidentpilot-worker`（durable queue、
+Sandbox、MCP）。数据库端口只绑定 `127.0.0.1`。
 
 ### B. Agent Runtime
 
@@ -191,7 +195,10 @@ PostgreSQL 是 V1 唯一主要持久化数据库。
 
 业务数据和 LangGraph checkpoint 在逻辑上应分离，例如不同 schema / table namespace。
 
-暂时不设计最终 SQL schema。
+SQL schema 由 Alembic 迁移（`alembic upgrade head`）独占定义。启动时每个入口都经过
+`init_schema()`：它只校验表是否存在，不创建表。只有 development/test 下的临时 SQLite
+文件允许 `create_all`，因此真实数据库不可能被 ORM 模型“顺手”建出一个没有迁移对应的
+schema；缺迁移时直接报错并指向 `alembic upgrade head`。
 
 **PostgreSQL 不保存完整 OpenTelemetry Trace。**
 
@@ -360,6 +367,9 @@ LangGraph
 User
 → FastAPI approval endpoint
 → persist APPROVE / REJECT
+→ APPROVE re-queues the run (PENDING)
+
+Leased Worker
 → resume LangGraph workflow
 ```
 
@@ -371,10 +381,10 @@ resume
 → GitHub Integration
 ```
 
-`REJECT`：
+`REJECT`（决定即终态，不再 resume）：
 
 ```text
-resume
+decide
 → NEEDS_HUMAN_INTERVENTION
 ```
 
@@ -605,7 +615,7 @@ flowchart TB
     SB -.->|"allowlisted test deps only"| RE
     LG --> Approval
     User -->|APPROVE / REJECT| API
-    API -->|"persist decision + resume"| LG
+    API -->|"persist decision; worker resumes"| LG
     LG -->|"after APPROVE resume"| GH
     API -.-> OTel
     LG -.-> OTel

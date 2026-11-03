@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from incidentpilot.agent.executor import get_run_executor
 from incidentpilot.api.auth import Principal, authenticate
 from incidentpilot.config import Settings, get_settings
-from incidentpilot.models.enums import AgentRunStatus
+from incidentpilot.models.enums import AgentRunStatus, ApprovalDecision
 from incidentpilot.models.schemas import (
     ApprovalOut,
     ApprovalRequest,
@@ -34,7 +33,7 @@ from incidentpilot.models.schemas import (
 from incidentpilot.observability import metrics as worker_metrics
 from incidentpilot.persistence import repo
 from incidentpilot.persistence.jobs import QueueFullError, create_incident_and_run
-from incidentpilot.persistence.session import get_session, init_db
+from incidentpilot.persistence.session import get_session, init_schema
 from incidentpilot.services.incidents import (
     ApprovalConflict,
     ApprovalService,
@@ -49,7 +48,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
-    await init_db()
+    await init_schema(settings)
     if settings.embedded_worker_enabled:
         await get_run_executor().recover_non_terminal()
     yield
@@ -250,8 +249,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 patch_artifact_id=body.patch_artifact_id,
                 patch_hash=body.patch_hash,
                 reason=body.reason,
-                lease_seconds=settings.job_lease_seconds,
-                owner_id=f"approval-api-{uuid.uuid4().hex[:8]}",
             )
         except ApprovalConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -261,19 +258,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if incident is not None:
             await approval_service.update_incident_for_decision(incident, body.decision)
 
-        # Resume the persisted LangGraph interrupt. GitHub is invoked by the
-        # resumed graph node, never directly by this API route.
-        from incidentpilot.agent.graph import resume_agent_workflow
-        if run.worker_id:
-            from incidentpilot.persistence.jobs import ClaimedRun
-            from incidentpilot.worker import DurableWorker
-
-            await DurableWorker(settings, worker_id=run.worker_id)._execute_claim(
-                ClaimedRun(run.incident_pk, run.run_id, run.worker_id, run.attempt_count, True)
-            )
-        else:
-            await resume_agent_workflow(run_id=run.run_id, decision=body.decision.value, settings=settings)
-
+        # Rejecting is terminal; approving re-queues the run. Either way nothing
+        # executes here, so a disconnected client cannot cancel the resumed graph
+        # or the GitHub call it makes.
+        if body.decision == ApprovalDecision.APPROVE and settings.embedded_worker_enabled:
+            get_run_executor().submit_resume(run.run_id, body.decision.value)
 
         return ApprovalOut.model_validate(approval)
 

@@ -107,7 +107,8 @@ RUN_TRANSITIONS = {
     AgentRunStatus.PENDING: {AgentRunStatus.RUNNING, AgentRunStatus.FAILED},
     AgentRunStatus.RUNNING: {AgentRunStatus.RUNNING, AgentRunStatus.PENDING,
                            AgentRunStatus.WAITING_APPROVAL, *TERMINAL_RUN_STATUSES},
-    AgentRunStatus.WAITING_APPROVAL: {AgentRunStatus.RUNNING,
+    # An approval decision re-queues the run; a leased worker performs the resume.
+    AgentRunStatus.WAITING_APPROVAL: {AgentRunStatus.PENDING, AgentRunStatus.RUNNING,
                                     AgentRunStatus.NEEDS_HUMAN_INTERVENTION},
     **{status: {status} for status in TERMINAL_RUN_STATUSES},
 }

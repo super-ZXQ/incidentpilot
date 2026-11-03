@@ -38,11 +38,17 @@ def safe_tool(function):
 
 
 def _resolve_reference_repo(repository: str) -> Path:
+    """Map the Agent's repository argument onto the one configured reference repo.
+
+    A repository in an incident is a label, not a path the caller chooses: only an
+    absolute path can name a repository, and then it must be the configured one.
+    Resolving a relative string against this process's CWD would let the same
+    incident succeed or fail depending on where the worker happened to start.
+    """
     configured = REFERENCE_REPO.resolve()
-    candidate = Path(repository).resolve() if repository else configured
-    if candidate != configured:
+    if Path(repository).is_absolute() and Path(repository).resolve() != configured:
         raise ValueError("repository is outside the configured reference repository")
-    return candidate
+    return configured
 
 
 def _read_json_file(path: Path, default: Any) -> Any:

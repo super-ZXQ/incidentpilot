@@ -6,6 +6,7 @@ from incidentpilot.persistence.session import (
     get_session,
     get_session_factory,
     init_db,
+    init_schema,
     reset_db_state,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "get_session",
     "get_session_factory",
     "init_db",
+    "init_schema",
     "reset_db_state",
 ]

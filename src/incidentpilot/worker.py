@@ -35,7 +35,7 @@ from incidentpilot.persistence.jobs import (
     renew_lease,
     retry_claim,
 )
-from incidentpilot.persistence.session import get_session_factory
+from incidentpilot.persistence.session import get_session_factory, init_schema
 from incidentpilot.services.incidents import RunService
 
 logger = logging.getLogger(__name__)
@@ -132,7 +132,12 @@ class DurableWorker:
                 heartbeat.result()
                 raise RuntimeError("lease ownership lost during execution")
             result = await execution
-            RUNS.labels(status=str(result.get("status", "UNKNOWN"))).inc()
+            result_status = str(result.get("status"))
+            if result_status not in {member.value for member in AgentRunStatus}:
+                # Never let a label lookup fail on the success path: an exception here
+                # would reclassify a finished run as a worker failure.
+                result_status = "UNDEFINED"
+            RUNS.labels(status=result_status).inc()
             async with factory() as session:
                 await release_claim(
                     session, run_id=claim.run_id, worker_id=self.worker_id, attempt_count=claim.attempt_count
@@ -171,30 +176,9 @@ class DurableWorker:
 
     async def _resume_or_execute(self, claim: ClaimedRun) -> dict[str, object]:
         """Resume approval interrupts distinctly from ordinary checkpoint recovery."""
-        from sqlalchemy import select
-
-        from incidentpilot.agent.graph import resume_agent_workflow
-        from incidentpilot.models.db import AgentRun, Approval
-        from incidentpilot.models.enums import ApprovalDecision
-
-        factory = get_session_factory()
-        async with factory() as session:
-            approval = (
-                await session.execute(
-                    select(Approval)
-                    .join(AgentRun, Approval.run_pk == AgentRun.id)
-                    .where(
-                        AgentRun.run_id == claim.run_id,
-                        Approval.decision == ApprovalDecision.APPROVE.value,
-                    )
-                )
-            ).scalars().first()
-        if approval is not None:
-            return await resume_agent_workflow(
-                run_id=claim.run_id,
-                decision=ApprovalDecision.APPROVE.value,
-                settings=self.settings,
-            )
+        decision = await self.executor.approved_decision(claim.run_id)
+        if decision is not None:
+            return await self.executor.resume(run_id=claim.run_id, decision=decision)
         return await self.executor.execute(
             incident_pk=claim.incident_pk,
             run_id=claim.run_id,
@@ -202,26 +186,57 @@ class DurableWorker:
         )
 
     async def _heartbeat(self, run_id: str, attempt_count: int | None = None) -> None:
+        from sqlalchemy.exc import SQLAlchemyError
+
         factory = get_session_factory()
+        loop = asyncio.get_running_loop()
+        # asyncio.TimeoutError aliases the built-in one, which is an OSError subclass.
+        transient_errors = (SQLAlchemyError, OSError)
+        # A renewal extends the lease by one full period, so the database deadline is
+        # one lease after the last confirmation. Stop one beat early: that is the last
+        # moment no other worker can have claimed this run yet.
+        tolerance = max(0.0, self.settings.job_lease_seconds - self.settings.job_heartbeat_seconds)
+        confirmed_at = loop.time()
         while True:
             await asyncio.sleep(self.settings.job_heartbeat_seconds)
-            async with factory() as session:
-                owned = await renew_lease(
-                    session,
-                    run_id=run_id,
-                    worker_id=self.worker_id,
-                    lease_seconds=self.settings.job_lease_seconds,
-                    attempt_count=attempt_count,
+            try:
+                async with factory() as session:
+                    owned = await renew_lease(
+                        session,
+                        run_id=run_id,
+                        worker_id=self.worker_id,
+                        lease_seconds=self.settings.job_lease_seconds,
+                        attempt_count=attempt_count,
+                    )
+            except transient_errors as exc:
+                # A pool timeout or a brief database restart must not abort a healthy run:
+                # until the lease expires nobody else can claim it, so keep beating.
+                logger.warning(
+                    "worker %s could not renew lease for %s: %s", self.worker_id, run_id, exc
                 )
+                if loop.time() - confirmed_at < tolerance:
+                    continue
+                # Past the deadline another worker may already own the run, so this one
+                # must stop mutating. Raising keeps the real failure category observable
+                # instead of leaving the row RUNNING on a lease it no longer holds.
+                logger.error(
+                    "worker %s could not confirm the lease for %s within %ss",
+                    self.worker_id,
+                    run_id,
+                    tolerance,
+                )
+                raise
             if not owned:
                 logger.warning("worker %s lost lease for %s", self.worker_id, run_id)
                 return
+            confirmed_at = loop.time()
 
 
 async def _main() -> None:
     settings = get_settings()
     if not settings.database_url.startswith("postgresql"):
         raise RuntimeError("durable worker requires PostgreSQL")
+    await init_schema(settings)
     worker = DurableWorker(settings)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

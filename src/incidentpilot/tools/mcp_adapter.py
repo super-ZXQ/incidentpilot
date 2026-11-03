@@ -90,11 +90,20 @@ class MCPReadonlyAdapter:
                     import json
 
                     payload = json.loads(texts[0])
-                    if not isinstance(payload, dict) or not payload or payload.get("error"):
-                        raise ValueError("MCP returned invalid, empty or error payload")
-                    return payload
                 except json.JSONDecodeError:
                     raise ValueError("MCP returned malformed JSON") from None
+                if not isinstance(payload, dict):
+                    raise ValueError("MCP returned a non-object payload")
+                if not payload:
+                    raise ValueError("MCP returned an empty payload")
+                if payload.get("error"):
+                    # Carry the server's own reason into the failure: a run diagnosed
+                    # later from the database cannot tell "not a git repository" from
+                    # "permission denied" from "upstream 500" without it.
+                    raise ValueError(
+                        f"MCP {name} failed: {str(payload['error'])[:300]}"
+                    )
+                return payload
             raise ValueError("MCP must return one complete JSON result")
         if self.live:
             raise RuntimeError("MCP live adapter is not connected; fake fallback is disabled")

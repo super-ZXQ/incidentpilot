@@ -71,7 +71,13 @@ async def test_e2e_full_loop_investigate_fix_approve_pr(tmp_path) -> None:
             json={"decision": "APPROVE", "actor": "e2e", "reason": "validated"},
         )
         assert approve.status_code == 200
-        run2 = (await client.get(f"/v1/runs/{data['run_id']}")).json()
+        for _ in range(150):
+            run2 = (await client.get(f"/v1/runs/{data['run_id']}")).json()
+            if run2["status"] not in {"PENDING", "RUNNING", "WAITING_APPROVAL"}:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail("approval resume timeout")
         assert run2["status"] == "RESOLVED"
         assert run2["result"]["pull_request"]["mode"] == "mock"
 

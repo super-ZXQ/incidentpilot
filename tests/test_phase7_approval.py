@@ -75,7 +75,7 @@ async def test_approval_approve_creates_mock_pr(client) -> None:
 
     for _ in range(50):
         run2 = (await client.get(f"/v1/runs/{data['run_id']}")).json()
-        if run2["status"] not in {"RUNNING", "WAITING_APPROVAL"}:
+        if run2["status"] not in {"PENDING", "RUNNING", "WAITING_APPROVAL"}:
             break
         await asyncio.sleep(0.05)
 
