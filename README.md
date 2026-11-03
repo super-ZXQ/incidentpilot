@@ -165,13 +165,28 @@ ingress that isn't already trusted: it has no auth.
 What the containerized stack was actually exercised with, on 2026-11-03: Alembic to
 `0005_security_bindings`, `/health` 200, the worker claiming a queued run and reading
 live metrics and logs over MCP, one nested sandbox container running pytest with the
-manager's flags, and the worker exporter in Prometheus — three queued runs were reported
-as `incidentpilot_queue_depth 3` / `incidentpilot_active_runs 2` on the worker target
-while the API process reported `0` for the same gauges. It did **not** complete a
-patch/test/approval loop: `inspect_git_history`
-and `inspect_git_diff` need `REFERENCE_REPO_PATH` to be a real Git repository, the image
-carries no `.git`, and a bind-mounted source directory alone is not one. Run the
-remediation loop from the host quick start above until a Git fixture is wired up.
+manager's flags, the worker exporter in Prometheus (three queued runs read as
+`incidentpilot_queue_depth 3` / `incidentpilot_active_runs 2` on the worker target while
+the API process reported `0` for the same gauges), and one full remediation loop:
+`inspect_git_history` succeeded, the patch was tested in a `docker` sandbox (`PASSED`,
+exit 0, real `base_commit_sha`), `APPROVE` re-queued the run, and the worker resumed it to
+`RESOLVED` with a pull request from the mock GitHub integration. That run injected no
+fault, so it proves the loop end to end, not that a specific regression was diagnosed.
+
+The Git fixture is why Compose points `REFERENCE_REPO_PATH` at `/reference-git/orders_api`
+instead of the bind mount: `inspect_git_history` shells out to `git log`, a bind-mounted
+source tree has no `.git`, and without that third evidence source every run stopped at
+`NEEDS_HUMAN_INTERVENTION`. `incidentpilot-refgit` builds the repository into a named
+volume and the worker mounts it read-only; logs still come from the live host directory,
+so `REFERENCE_LOGS_PATH` stays on `/reference/orders_api`. The built HEAD tree must match
+the reference source exactly or the build fails — but the two commits are a
+reconstruction of that tree, not deployment history, so read this fixture's git evidence
+as "what the code is" rather than "what changed and when". The injected faults are
+in-process state in `reference/orders_api/faults.py` and no commit describes them. On the
+host quick start none of this applies: `./reference/orders_api` already sits inside this
+checkout, so `git log` there is the project's own history. If `incidentpilot-refgit` exits
+with "belongs to uid …, not …", the volume predates this image and is owned by another
+uid: `docker volume rm <project>_ip_ref_git` and start again.
 
 Suggested environment:
 

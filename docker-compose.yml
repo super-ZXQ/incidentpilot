@@ -132,10 +132,11 @@ services:
       LLM_ENABLED: ${LLM_ENABLED:-false}
       GITHUB_INTEGRATION_ENABLED: ${GITHUB_INTEGRATION_ENABLED:-false}
       REFERENCE_ORDERS_API_URL: http://reference-orders-api:8001
-      REFERENCE_REPO_PATH: /reference/orders_api
-      # The /reference mount is the same directory the reference API writes its log
-      # file into, so read_logs finds it; without this the default relative path
-      # resolves under /app and every read_logs call fails.
+      # The bind-mounted source tree has no .git, so this is a repository built from the
+      # same files by incidentpilot-refgit; HEAD equals the deployed source.
+      REFERENCE_REPO_PATH: /reference-git/orders_api
+      # Logs still come from the live host directory the reference API writes into: the
+      # repository volume holds no var/, and without this path read_logs fails every call.
       REFERENCE_LOGS_PATH: /reference/orders_api/var/logs
       REFERENCE_DB_URL: postgresql://reference_readonly:reference_readonly@reference-postgres:5432/orders
       TMPDIR: ${IP_WORKSPACES:?set IP_WORKSPACES to an absolute host directory for sandbox workspaces}
@@ -154,8 +155,11 @@ services:
       - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - ${IP_WORKSPACES:?set IP_WORKSPACES}:${IP_WORKSPACES:?set IP_WORKSPACES}
       - ./reference/orders_api:/reference/orders_api:ro
+      - ip_ref_git:/reference-git/orders_api:ro
     depends_on:
       incidentpilot-migrate:
+        condition: service_completed_successfully
+      incidentpilot-refgit:
         condition: service_completed_successfully
       sandbox-image:
         condition: service_started
@@ -163,6 +167,33 @@ services:
     stop_grace_period: 90s
     restart: unless-stopped
 
+  # Investigation evidence needs a repository: `inspect_git_history` shells out to
+  # `git log` in REFERENCE_REPO_PATH, and a bind-mounted source tree has no .git, so
+  # every containerized run used to stop at NEEDS_HUMAN_INTERVENTION. This builds that
+  # repository from the same files the reference API serves, into a named volume.
+  incidentpilot-refgit:
+    image: incidentpilot-app:${GIT_SHA:-local}
+    healthcheck:
+      disable: true
+    # Runs as the image's uid, which is also the worker's: the volume is app-owned, so
+    # the repository it builds is readable by git on the other side.
+    command:
+      - python
+      - -m
+      - incidentpilot.benchmarks.reference_git_fixture
+      - --source
+      - /reference-src/orders_api
+      - --dest
+      - /reference-git/orders_api
+    volumes:
+      - ./reference/orders_api:/reference-src/orders_api:ro
+      - ip_ref_git:/reference-git/orders_api
+    depends_on:
+      incidentpilot-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
 volumes:
   ip_pg_app:
   ip_pg_ref:
+  ip_ref_git:

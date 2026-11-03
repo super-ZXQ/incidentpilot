@@ -77,9 +77,17 @@ V1 **不设计 Multi-Agent**。
 
 FastAPI **不负责** Agent 推理逻辑，也**不直接调用** GitHub Integration。
 
-部署为三个进程/容器：`incidentpilot-migrate`（Alembic 一次性任务）→ `incidentpilot-app`
+部署为四个容器：`incidentpilot-migrate`（Alembic 一次性任务）→ `incidentpilot-refgit`
+（把 reference 源码树建成 named volume 里的真实 Git 仓库）→ `incidentpilot-app`
 （HTTP，`EMBEDDED_WORKER_ENABLED=false`）与 `incidentpilot-worker`（durable queue、
-Sandbox、MCP）。数据库端口只绑定 `127.0.0.1`。
+Sandbox、MCP）。worker 的 `REFERENCE_REPO_PATH` 指向该 volume（`/reference-git/orders_api`，
+只读挂载），日志仍来自 `/reference/orders_api` 的宿主 bind mount。数据库端口只绑定 `127.0.0.1`。
+
+Git fixture 存在的原因是 `inspect_git_history` 直接 `git log`：bind mount 的源码目录没有
+`.git`，第三个证据源永远拿不到，容器化运行只会停在 `NEEDS_HUMAN_INTERVENTION`。构建会校验
+HEAD 树与 reference 源码逐字节一致，但两个 commit 是对该树的**重建**，不是部署历史；
+故障注入是 `faults.py` 的进程内状态，任何 commit 都不描述它。宿主开发路径不需要这套东西，
+因为 `./reference/orders_api` 本来就在项目 checkout 里。
 
 ### B. Agent Runtime
 

@@ -35,7 +35,14 @@ RUN apt-get update \
     && useradd --uid 65532 --gid 65532 --home-dir /app --no-create-home \
        --shell /usr/sbin/nologin incidentpilot \
     && mkdir -p /app \
-    && chown 65532:65532 /app
+    && chown 65532:65532 /app \
+    && mkdir -p /reference-git/orders_api \
+    && chown 65532:65532 /reference-git/orders_api
+
+# /reference-git/orders_api exists and is app-owned so that a fresh named volume mounted
+# there inherits that uid: Docker initializes an empty volume from the image's directory,
+# and incidentpilot-refgit must build the repository as the same uid that will read it
+# (git refuses repositories owned by somebody else).
 
 WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}"
